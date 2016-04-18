@@ -90,7 +90,7 @@ public class SendLinkHandler extends BaseLinkHandler
 			}
 		}
 		
-		Sender sender = (Sender) event.getLink();
+		Sender sender = event.getSender();
 		this.msgSender.onFlow(sender.getRemoteCredit());
 		
 		if(TRACE_LOGGER.isLoggable(Level.FINEST))

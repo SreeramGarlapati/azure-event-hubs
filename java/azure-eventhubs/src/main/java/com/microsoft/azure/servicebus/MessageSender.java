@@ -671,7 +671,17 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	@Override
 	public void onFlow(int credit)
 	{
-		this.linkCredit.set(credit);
+		int updatedCredit = 0;
+		synchronized (this.sendCall)
+		{
+			updatedCredit = this.sendLink.getRemoteCredit();
+		}
+		
+		if (updatedCredit <= 0)
+			return;
+		
+		System.out.println("received credit: " + updatedCredit + ", pendingSendsWaitingForCredit: " + this.pendingSendsWaitingForCredit.size() + ", pendingSendsWaitingForAcks: " + this.pendingSendWaiters.size());
+		this.linkCredit.addAndGet(updatedCredit);
 		
 		while (!this.pendingSendsWaitingForCredit.isEmpty() && this.linkCredit.get() > 0)
 		{
