@@ -671,7 +671,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	}
 
 	@Override
-	public void onFlow(int credit)
+	public void onFlow()
 	{
 		int updatedCredit = 0;
 		synchronized (this.sendCall)
@@ -683,8 +683,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			return;
 		
 		if (TRACE_LOGGER.isLoggable(Level.FINE))
-			TRACE_LOGGER.log(Level.FINE, 
-					String.format(Locale.US, "linkName[%s], path[%s], remoteLinkCredit[%s], pendingSendsWaitingForCredit[%s], pendingSendsWaitingDelivery[%s]",
+			TRACE_LOGGER.log(Level.FINE, String.format(Locale.US, "linkName[%s], path[%s], remoteLinkCredit[%s], pendingSendsWaitingForCredit[%s], pendingSendsWaitingDelivery[%s]",
 							MessageSender.this.getClientId(), MessageSender.this.sendPath, updatedCredit, this.pendingSendsWaitingForCredit.size(), this.pendingSendWaiters.size()));
 		
 		this.linkCredit.addAndGet(updatedCredit);
