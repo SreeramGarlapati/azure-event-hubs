@@ -26,12 +26,10 @@ import com.microsoft.azure.servicebus.amqp.*;
 public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErrorContextProvider
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
-	private static final int PING_FLOW_THRESHOLD = 2;
-	private static final Duration RECEIVE_BATCH_INTERVAL = Duration.ofMillis(5);
-	private static final double FLOW_THRESHOLD_PERCENT = (double) 1 / 3;
-	private static final int MAX_FLOW_DEFAULT = 32;
+	private static final Duration RECEIVE_BATCH_INTERVAL = Duration.ofMillis(50);
+	private static final double FLOW_THRESHOLD_PERCENT = (double) 1 / 2;
+	private static final int MAX_FLOW_DEFAULT = 10;
 	private static final Duration MINIMUM_RECEIVE_TIMER = Duration.ofSeconds(2);
-	private static final int LINK_RESET_THRESHOLD = 3;
 	
 	private final ConcurrentLinkedQueue<WorkItem<Collection<Message>>> pendingReceives;
 	private final MessagingFactory underlyingFactory;
@@ -53,8 +51,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private boolean offsetInclusive;
 	
 	private String lastReceivedOffset;
-	private AtomicInteger pingFlowCount;
-	private AtomicInteger currentFlow;
 	private Instant lastCommunicatedAt;
 	
 	private boolean linkCreateScheduled;
@@ -62,7 +58,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private Exception lastKnownLinkError;
 	private boolean onDeliveryTimerSet;
 	private Object deliverySync;
-	private int linkResetCount;
+	
+	private int currentFlow;
+	private Object flowSync;
 	
 	private MessageReceiver(final MessagingFactory factory, 
 			final String name, 
@@ -83,15 +81,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		this.epoch = epoch;
 		this.isEpochReceiver = isEpochReceiver;
 		this.prefetchedMessages = new ConcurrentLinkedQueue<Message>();
-		this.pingFlowCount = new AtomicInteger();
 		this.linkCreateLock = new Object();
 		this.linkClose = new CompletableFuture<Void>();
 		this.lastKnownLinkError = null;
-		this.currentFlow = new AtomicInteger(0);
 		this.onDeliveryTimerSet = false;
 		this.deliverySync = new Object();
-		this.linkResetCount = 0;
-		
+		this.flowSync = new Object();
+
 		if (offset != null)
 		{
 			this.lastReceivedOffset = offset;
@@ -179,42 +175,19 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	{
 		int oldPrefetchCount = this.prefetchCount;
 		this.prefetchCount = value;
-		this.sendFlowInternal(value - oldPrefetchCount);
 	}
 	
 	public final int getInitialPrefetchCount()
 	{
-		return (this.prefetchCount > MessageReceiver.PING_FLOW_THRESHOLD) 
-				? this.prefetchCount - MessageReceiver.PING_FLOW_THRESHOLD 
-				: this.prefetchCount;
+		return this.prefetchCount;
 	}
 		
 	public CompletableFuture<Collection<Message>> receive()
 	{
-		if (this.receiveLink.getLocalState() == EndpointState.CLOSED)
-		{
-			this.scheduleRecreate(Duration.ofMillis(1));
-		}
-		
-		List<Message> returnMessages = null;
-		Message currentMessage = null;
-		while ((currentMessage = this.pollPrefetchQueue()) != null) 
-		{
-			if (returnMessages == null)
-			{
-				returnMessages = new LinkedList<Message>();
-			}
-			
-			returnMessages.add(currentMessage);
-			if (returnMessages.size() >= this.getInitialPrefetchCount())
-			{
-				break;
-			}
-		}
+		List<Message> returnMessages = this.receiveCore();
 		
 		if (returnMessages != null)
 		{
-			this.sendFlow(returnMessages.size());
 			return CompletableFuture.completedFuture((Collection<Message>) returnMessages);				
 		}
 		
@@ -231,14 +204,28 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		CompletableFuture<Collection<Message>> onReceive = new CompletableFuture<Collection<Message>>();
 		this.pendingReceives.offer(new WorkItem<Collection<Message>>(onReceive, this.operationTimeout));
 		
-		this.sendPingFlow();
-		
 		return onReceive;
 	}
 	
-	public int getPingFlowThreshold()
+	public List<Message> receiveCore()
 	{
-		return (this.prefetchCount > MessageReceiver.PING_FLOW_THRESHOLD) ? MessageReceiver.PING_FLOW_THRESHOLD : 0; 
+		List<Message> returnMessages = null;
+		Message currentMessage = null;
+		while ((currentMessage = this.pollPrefetchQueue()) != null) 
+		{
+			if (returnMessages == null)
+			{
+				returnMessages = new LinkedList<Message>();
+			}
+			
+			returnMessages.add(currentMessage);
+			if (returnMessages.size() >= this.getInitialPrefetchCount())
+			{
+				break;
+			}
+		}
+		
+		return returnMessages;
 	}
 	
 	public void onOpenComplete(Exception exception)
@@ -260,7 +247,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			if (this.receiveLink.getCredit() == 0)
 			{
 				int pendingPrefetch = this.getInitialPrefetchCount() - this.prefetchedMessages.size();
-				this.pingFlowCount.set(0);
 				this.sendFlow(pendingPrefetch);
 			}
 		}
@@ -286,58 +272,15 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		this.lastCommunicatedAt = Instant.now();
 		this.prefetchedMessages.add(message);
 		
-		if (!this.onDeliveryTimerSet)
-		{
-			synchronized(this.deliverySync)
-			{
-				if (!this.onDeliveryTimerSet && !this.pendingReceives.isEmpty())
-				{
-					this.onDeliveryTimerSet = true;
-			
-					Timer.schedule(new Runnable() 
-					{
-						@Override
-						public void run()
-						{
-							if (MessageReceiver.this.prefetchedMessages.size() == 0)
-							{
-								return;
-							}
-							
-							WorkItem<Collection<Message>> currentReceive = MessageReceiver.this.pendingReceives.poll();
-							LinkedList<Message> returnMessages = null;
-							if (currentReceive != null)
-							{
-								// Receive Api contract is to return null if no messages
-								Message message = MessageReceiver.this.pollPrefetchQueue();
-								if (message != null)
-								{
-									returnMessages = new LinkedList<Message>();
-									
-									do 
-									{
-										returnMessages.add(message);	
-									}while(returnMessages.size() < MessageReceiver.this.getInitialPrefetchCount()
-											&& (message = MessageReceiver.this.pollPrefetchQueue()) != null);
-									
-									MessageReceiver.this.sendFlow(returnMessages.size());
-								}
-								
-								CompletableFuture<Collection<Message>> future = currentReceive.getWork();
-								future.complete(returnMessages);
-							}
-							
-							synchronized(MessageReceiver.this.deliverySync)
-							{
-								MessageReceiver.this.onDeliveryTimerSet = false;
-							}
-						}
-					}, MessageReceiver.RECEIVE_BATCH_INTERVAL, TimerType.OneTimeRun);
-				}
-			}
-		}
-	
 		this.underlyingFactory.getRetryPolicy().resetRetryCount(this.getClientId());
+		
+		WorkItem<Collection<Message>> currentReceive = this.pendingReceives.poll();
+		if (currentReceive != null)
+		{
+			List<Message> returnMessages = this.receiveCore();
+			CompletableFuture<Collection<Message>> future = currentReceive.getWork();
+			future.complete(returnMessages);
+		}
 	}
 	
 	public void onError(ErrorCondition error)
@@ -348,6 +291,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	public void onError(Exception exception)
 	{
+		System.out.println(this.receivePath + ": " + exception.getMessage());
+		exception.printStackTrace();
 		WorkItem<Collection<Message>> currentReceive = this.pendingReceives.peek();
 		
 		TimeoutTracker currentOperationTracker = currentReceive != null 
@@ -506,113 +451,43 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		if (message != null)
 		{
 			this.lastReceivedOffset = message.getMessageAnnotations().getValue().get(AmqpConstants.OFFSET).toString();
+			this.sendFlow(1);
 		}
 		
 		return message;
 	}
 	
 	/**
-	 * set the link credit; not thread-safe
+	 * set the link credit; thread-safe
 	 */
-	private void sendFlow(int credits)
+	private void sendFlow(final int credits)
 	{
-		if (this.receiveLink.getLocalState() != EndpointState.CLOSED)
+		int flowThreshold = (int) Math.min(this.getInitialPrefetchCount() * MessageReceiver.FLOW_THRESHOLD_PERCENT, MessageReceiver.MAX_FLOW_DEFAULT);
+		int tempFlow = 0;
+		
+		// slow down sending the flow - to make the protocol less-chat'y
+		// will not send any flow if totalCredits=0 (@param credits + currentLinkCredit)
+		synchronized (this.flowSync)
 		{
-			int currentPingFlow = this.pingFlowCount.get();
-			if (currentPingFlow > 0)
+			this.currentFlow += credits;
+			if (this.currentFlow > flowThreshold)
 			{
-				if (currentPingFlow < credits)
-				{
-					this.sendFlowInternal(credits - currentPingFlow);
-					this.pingFlowCount.set(0);
-				}
-				else 
-				{
-					this.pingFlowCount.set(currentPingFlow - credits);
-				}
-			}
-			else if (credits > 0)
-			{
-				this.sendFlowInternal(credits);
+				tempFlow = this.currentFlow;
+				
+				this.receiveLink.flow(this.currentFlow);
+				this.currentFlow = 0;
+				System.out.println("sendFlow[" + tempFlow + "], path[" + this.receivePath + "], current-link-credit[" + this.receiveLink.getCredit() + "], flowThreshold[" + flowThreshold + "]");
 			}
 		}
-		else
+		
+		if (tempFlow != 0)
 		{
-			this.scheduleRecreate(Duration.ofMillis(1));
-		}		
-	}
-	
-	/**
-	 * slow down sending the flow - to make the protocol less-chat'y
-	 * will not send any flow if totalCredits=0 (@param credits + currentLinkCredit)
-	 */
-	private void sendFlowInternal(int credits)
-	{
-		int finalFlow = this.currentFlow.addAndGet(credits);
-		int flowThreshold = (int) Math.min(this.getInitialPrefetchCount() * MessageReceiver.FLOW_THRESHOLD_PERCENT, MessageReceiver.MAX_FLOW_DEFAULT);
-		if (finalFlow > 0 && finalFlow > flowThreshold)
-		{
-			this.receiveLink.flow(this.currentFlow.getAndSet(0));
 			this.lastCommunicatedAt = Instant.now();
 			
 			if(TRACE_LOGGER.isLoggable(Level.FINE))
 	        {
-	        	TRACE_LOGGER.log(Level.FINE,
-	        			String.format("linkname[%s], updated-link-credit[%s], sendCredits[%s]", this.receiveLink.getName(), this.receiveLink.getCredit(), finalFlow));
+	        	TRACE_LOGGER.log(Level.FINE, String.format("linkname[%s], updated-link-credit[%s], sendCredits[%s]", this.receiveLink.getName(), this.receiveLink.getCredit(), credits));
 	        }
-		}
-	}
-	
-	private void sendPingFlow()
-	{
-		if (this.receiveLink.getLocalState() != EndpointState.CLOSED)
-		{
-			if (this.pingFlowCount.get() < this.getPingFlowThreshold())
-			{
-				if (Instant.now().isAfter(this.lastCommunicatedAt.plus(this.operationTimeout)))
-				{
-					this.pingFlowCount.incrementAndGet();
-					
-					// Proton-j library needs to expose the sending flow with echo=true; workaround until then
-					this.receiveLink.flow(1);
-					this.lastCommunicatedAt = Instant.now();
-	
-					if(TRACE_LOGGER.isLoggable(Level.FINE))
-			        {
-			        	TRACE_LOGGER.log(Level.FINE,
-			        			String.format("linkname[%s], linkPath[%s], updated-link-credit[%s]", this.receiveLink.getName(), this.receivePath, this.receiveLink.getCredit()));
-			        }
-				}
-				else
-				{
-					this.sendFlowInternal(0);
-				}
-			}
-			else if (this.receiveLink.getLocalState() != EndpointState.CLOSED)
-			{
-				String action = null;
-				if (this.linkResetCount < MessageReceiver.LINK_RESET_THRESHOLD)
-				{
-					this.receiveLink.close();
-					action = "detectedReceiveStuck-closingLink";
-					this.linkResetCount++;
-				}
-				else 
-				{
-					this.underlyingFactory.resetConnection();
-					this.linkResetCount = 0;
-				}
-				
-				if(TRACE_LOGGER.isLoggable(Level.FINE))
-		        {
-		        	TRACE_LOGGER.log(Level.FINE,
-		        			String.format("linkname[%s], linkPath[%s], linkCredit[%s], action[%s]", this.receiveLink.getName(), this.receivePath, this.receiveLink.getCredit(), action));
-		        }
-			}
-		}
-		else
-		{
-			this.scheduleRecreate(Duration.ofMillis(1));
 		}
 	}
 	
