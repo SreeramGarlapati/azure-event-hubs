@@ -26,10 +26,10 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
 	private static final Duration MINIMUM_RECEIVE_TIMER = Duration.ofSeconds(2);
-	private static final int MAX_MESSAGE_RETRYCOUNT = 3;
-	
+
 	private final ConcurrentLinkedQueue<WorkItem<Collection<Message>>> pendingReceives;
 	private final MessagingFactory underlyingFactory;
+	private final ITimeoutErrorHandler stuckTransportHandler;
 	private final String receivePath;
 	private final Runnable onOperationTimedout;
 	private final Duration operationTimeout;
@@ -54,9 +54,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	private int currentFlow;
 	private Object flowSync;
-	private int currentTimeoutRetry = 0;
 	
-	private MessageReceiver(final MessagingFactory factory, 
+	private MessageReceiver(final MessagingFactory factory,
+			final ITimeoutErrorHandler stuckTransportHandler,
 			final String name, 
 			final String recvPath, 
 			final String offset,
@@ -68,6 +68,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	{
 		super(name);
 		this.underlyingFactory = factory;
+		this.stuckTransportHandler = stuckTransportHandler;
 		this.operationTimeout = factory.getOperationTimeout();
 		this.receivePath = recvPath;
 		this.prefetchCount = prefetchCount;
@@ -106,7 +107,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 						if (dequedWorkItem != null)
 						{
 							workItemTimedout = true;
-							System.out.println("WorkItemTimedout-------------------------- " + MessageReceiver.this.receivePath);
 							dequedWorkItem.getWork().complete(null);
 						}
 						else
@@ -121,17 +121,11 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 				
 				if (workItemTimedout)
 				{
-					MessageReceiver.this.currentTimeoutRetry++;
-					
 					// workaround to push the sendflow-performative to reactor
-					if (MessageReceiver.this.currentTimeoutRetry < MessageReceiver.MAX_MESSAGE_RETRYCOUNT)
-						MessageReceiver.this.receiveLink.flow(0);
-					else
-					{
-						System.out.println("reset connection-------------------------- " + MessageReceiver.this.receivePath);
-						MessageReceiver.this.currentTimeoutRetry = 0;
-						MessageReceiver.this.underlyingFactory.resetConnection();
-					}
+					MessageReceiver.this.receiveLink.flow(0);
+					
+					if (MessageReceiver.this.currentFlow >= MessageReceiver.this.prefetchCount)
+						MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
 				}
 			}
 		};
@@ -152,7 +146,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			final boolean isEpochReceiver)
 	{
 		MessageReceiver msgReceiver = new MessageReceiver(
-			factory, 
+			factory,
+			factory,
 			name, 
 			recvPath, 
 			offset, 
@@ -247,6 +242,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			}
 			
 			this.lastKnownLinkError = null;
+			this.stuckTransportHandler.resetTimeoutErrorCount();
 			
 			// re-open link always starts from the last received offset
 			this.offsetInclusive = false;
@@ -298,7 +294,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	public void onError(Exception exception)
 	{
-		System.out.println("onError: "+ this.receivePath);
 		exception.getStackTrace();
 		
 		this.lastKnownLinkError = exception;
@@ -315,8 +310,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 								: this.operationTimeout.minus(currentOperationTracker.elapsed());
 		Duration retryInterval = this.underlyingFactory.getRetryPolicy().getNextRetryInterval(this.getClientId(), exception, remainingTime);
 
-		System.out.println("retryInterval: " +retryInterval + "remainingTime: " + remainingTime + "currentOperationTracker: " + currentOperationTracker.remaining());
-		
 		if (retryInterval != null)
 		{
 			if (this.receiveLink.getLocalState() != EndpointState.CLOSED)

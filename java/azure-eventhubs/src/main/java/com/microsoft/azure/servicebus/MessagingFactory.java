@@ -8,22 +8,32 @@ import java.io.IOException;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.LinkedList;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
-import org.apache.qpid.proton.Proton;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
-import org.apache.qpid.proton.engine.*;
+import org.apache.qpid.proton.engine.BaseHandler;
+import org.apache.qpid.proton.engine.Connection;
+import org.apache.qpid.proton.engine.EndpointState;
+import org.apache.qpid.proton.engine.Event;
 import org.apache.qpid.proton.engine.Handler;
-import org.apache.qpid.proton.reactor.*;
+import org.apache.qpid.proton.engine.HandlerException;
+import org.apache.qpid.proton.engine.Link;
+import org.apache.qpid.proton.reactor.Reactor;
 
-import com.microsoft.azure.servicebus.amqp.*;
+import com.microsoft.azure.servicebus.amqp.BaseLinkHandler;
+import com.microsoft.azure.servicebus.amqp.ConnectionHandler;
+import com.microsoft.azure.servicebus.amqp.IAmqpConnection;
+import com.microsoft.azure.servicebus.amqp.ProtonUtil;
+import com.microsoft.azure.servicebus.amqp.ReactorHandler;
 
 /**
  * Abstracts all amqp related details and exposes AmqpConnection object
  * Manages connection life-cycle
  */
-public class MessagingFactory extends ClientEntity implements IAmqpConnection, IConnectionFactory
+public class MessagingFactory extends ClientEntity implements IAmqpConnection, IConnectionFactory, ITimeoutErrorHandler
 {
 	
 	public static final Duration DefaultOperationTimeout = Duration.ofSeconds(60); 
@@ -45,6 +55,8 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	private CompletableFuture<Connection> openConnection;
 	private LinkedList<Link> registeredLinks;
 	private TimeoutTracker connectionCreateTracker;
+	private AtomicInteger timeoutErrorCount;
+	private int timeoutRetryThreshold = 3;
 	
 	/**
 	 * @param reactor parameter reactor is purely for testing purposes and the SDK code should always set it to null
@@ -53,6 +65,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	{
 		super("MessagingFactory".concat(StringUtil.getRandomString()));
 		this.hostName = builder.getEndpoint().getHost();
+		this.timeoutErrorCount = new AtomicInteger(0);
 		
 		this.startReactor(new ReactorHandler()
 		{
@@ -277,7 +290,6 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	
 	void resetConnection()
 	{		
-		// this.reactor.selectable().getChannel().close();	
 		this.reactor.free();
 		this.onReactorError(new ServiceBusException(true, "java client invoked resetConnection"));
 	}
@@ -328,7 +340,6 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 			catch (HandlerException handlerException)
 			{
 				Exception cause = handlerException;
-				cause.printStackTrace();
 				
 				if(TRACE_LOGGER.isLoggable(Level.WARNING))
 			    {
@@ -357,4 +368,20 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	{
 		this.registeredLinks.remove(link);	
 	}
+
+	@Override
+	public void reportTimeoutError()
+	{
+		int timeoutRetryCount = this.timeoutErrorCount.incrementAndGet();
+		if (timeoutRetryCount >= this.timeoutRetryThreshold)
+		{
+			this.resetConnection();
+		}
+	}
+
+	@Override
+	public void resetTimeoutErrorCount()
+	{
+		this.timeoutErrorCount.set(0);
+	}	
 }
