@@ -276,8 +276,10 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	}
 	
 	void resetConnection()
-	{
-		this.onReactorError(new ServiceBusException(true, "Client invoked connection reset."));
+	{		
+		// this.reactor.selectable().getChannel().close();	
+		this.reactor.free();
+		this.onReactorError(new ServiceBusException(true, "java client invoked resetConnection"));
 	}
 	
 	@Override
@@ -326,15 +328,16 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 			catch (HandlerException handlerException)
 			{
 				Exception cause = handlerException;
+				cause.printStackTrace();
 				
-				if(TRACE_LOGGER.isLoggable(Level.FINE))
+				if(TRACE_LOGGER.isLoggable(Level.WARNING))
 			    {
 					TRACE_LOGGER.log(Level.WARNING, "UnHandled exception while processing events in reactor:");
-					TRACE_LOGGER.log(Level.FINE, handlerException.getMessage());
+					TRACE_LOGGER.log(Level.WARNING, handlerException.getMessage());
 					if (handlerException.getStackTrace() != null)
 						for (StackTraceElement ste: handlerException.getStackTrace())
 						{
-							TRACE_LOGGER.log(Level.FINE, ste.toString());
+							TRACE_LOGGER.log(Level.WARNING, ste.toString());
 						}
 			    }
 				

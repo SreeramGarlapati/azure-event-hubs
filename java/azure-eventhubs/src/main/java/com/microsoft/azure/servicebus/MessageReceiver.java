@@ -7,7 +7,6 @@ package com.microsoft.azure.servicebus;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import org.apache.qpid.proton.amqp.*;
@@ -26,14 +25,11 @@ import com.microsoft.azure.servicebus.amqp.*;
 public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErrorContextProvider
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
-	private static final Duration RECEIVE_BATCH_INTERVAL = Duration.ofMillis(50);
-	private static final double FLOW_THRESHOLD_PERCENT = (double) 1 / 2;
-	private static final int MAX_FLOW_DEFAULT = 10;
 	private static final Duration MINIMUM_RECEIVE_TIMER = Duration.ofSeconds(2);
+	private static final int MAX_MESSAGE_RETRYCOUNT = 3;
 	
 	private final ConcurrentLinkedQueue<WorkItem<Collection<Message>>> pendingReceives;
 	private final MessagingFactory underlyingFactory;
-	private final String name;
 	private final String receivePath;
 	private final Runnable onOperationTimedout;
 	private final Duration operationTimeout;
@@ -51,16 +47,14 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private boolean offsetInclusive;
 	
 	private String lastReceivedOffset;
-	private Instant lastCommunicatedAt;
 	
 	private boolean linkCreateScheduled;
 	private Object linkCreateLock;
 	private Exception lastKnownLinkError;
-	private boolean onDeliveryTimerSet;
-	private Object deliverySync;
 	
 	private int currentFlow;
 	private Object flowSync;
+	private int currentTimeoutRetry = 0;
 	
 	private MessageReceiver(final MessagingFactory factory, 
 			final String name, 
@@ -75,7 +69,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		super(name);
 		this.underlyingFactory = factory;
 		this.operationTimeout = factory.getOperationTimeout();
-		this.name = name;
 		this.receivePath = recvPath;
 		this.prefetchCount = prefetchCount;
 		this.epoch = epoch;
@@ -84,8 +77,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		this.linkCreateLock = new Object();
 		this.linkClose = new CompletableFuture<Void>();
 		this.lastKnownLinkError = null;
-		this.onDeliveryTimerSet = false;
-		this.deliverySync = new Object();
 		this.flowSync = new Object();
 
 		if (offset != null)
@@ -106,17 +97,40 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			public void run()
 			{
 				WorkItem<Collection<Message>> topWorkItem = null;
+				boolean workItemTimedout = false;
 				while((topWorkItem = MessageReceiver.this.pendingReceives.peek()) != null)
 				{
 					if (topWorkItem.getTimeoutTracker().remaining().getSeconds() <= 0)
 					{
 						WorkItem<Collection<Message>> dequedWorkItem = MessageReceiver.this.pendingReceives.poll();
-						dequedWorkItem.getWork().complete(null);
+						if (dequedWorkItem != null)
+						{
+							workItemTimedout = true;
+							System.out.println("WorkItemTimedout-------------------------- " + MessageReceiver.this.receivePath);
+							dequedWorkItem.getWork().complete(null);
+						}
+						else
+							break;
 					}
 					else
 					{
 						MessageReceiver.this.scheduleOperationTimer(topWorkItem.getTimeoutTracker());
-						return;
+						break;
+					}
+				}
+				
+				if (workItemTimedout)
+				{
+					MessageReceiver.this.currentTimeoutRetry++;
+					
+					// workaround to push the sendflow-performative to reactor
+					if (MessageReceiver.this.currentTimeoutRetry < MessageReceiver.MAX_MESSAGE_RETRYCOUNT)
+						MessageReceiver.this.receiveLink.flow(0);
+					else
+					{
+						System.out.println("reset connection-------------------------- " + MessageReceiver.this.receivePath);
+						MessageReceiver.this.currentTimeoutRetry = 0;
+						MessageReceiver.this.underlyingFactory.resetConnection();
 					}
 				}
 			}
@@ -173,13 +187,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	public void setPrefetchCount(final int value)
 	{
-		int oldPrefetchCount = this.prefetchCount;
+		// TODO: Fix setPretch scenario - remove whereever flow is assumed to be only default (300)
 		this.prefetchCount = value;
-	}
-	
-	public final int getInitialPrefetchCount()
-	{
-		return this.prefetchCount;
 	}
 		
 	public CompletableFuture<Collection<Message>> receive()
@@ -194,7 +203,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		if (this.operationTimeout.compareTo(MessageReceiver.MINIMUM_RECEIVE_TIMER) <= 0)
 		{
 			return CompletableFuture.completedFuture(null);
-		}		
+		}
 		
 		if (this.pendingReceives.isEmpty())
 		{
@@ -219,7 +228,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			}
 			
 			returnMessages.add(currentMessage);
-			if (returnMessages.size() >= this.getInitialPrefetchCount())
+			if (returnMessages.size() >= this.prefetchCount)
 			{
 				break;
 			}
@@ -232,7 +241,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	{
 		if (exception == null)
 		{
-			this.lastCommunicatedAt = Instant.now();
 			if (this.linkOpen != null && !this.linkOpen.getWork().isDone())
 			{
 				this.linkOpen.getWork().complete(this);
@@ -246,7 +254,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			
 			if (this.receiveLink.getCredit() == 0)
 			{
-				int pendingPrefetch = this.getInitialPrefetchCount() - this.prefetchedMessages.size();
+				int pendingPrefetch = this.prefetchCount - this.prefetchedMessages.size();
 				this.sendFlow(pendingPrefetch);
 			}
 		}
@@ -266,10 +274,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		}
 	}
 	
-	// intended to be called by proton reactor handler 
+	// intended to be invoked by proton reactor handler - upon delivery 
 	public void onReceiveComplete(Message message)
 	{
-		this.lastCommunicatedAt = Instant.now();
 		this.prefetchedMessages.add(message);
 		
 		this.underlyingFactory.getRetryPolicy().resetRetryCount(this.getClientId());
@@ -291,19 +298,24 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	public void onError(Exception exception)
 	{
-		System.out.println(this.receivePath + ": " + exception.getMessage());
-		exception.printStackTrace();
+		System.out.println("onError: "+ this.receivePath);
+		exception.getStackTrace();
+		
+		this.lastKnownLinkError = exception;
 		WorkItem<Collection<Message>> currentReceive = this.pendingReceives.peek();
 		
 		TimeoutTracker currentOperationTracker = currentReceive != null 
 				? currentReceive.getTimeoutTracker() 
-				: (this.linkOpen.getWork().isDone() ? null : this.linkOpen.getTimeoutTracker());
+				: ((this.linkOpen != null && this.linkOpen.getWork() != null && !this.linkOpen.getWork().isDone()) 
+						? this.linkOpen.getTimeoutTracker() : new TimeoutTracker(this.operationTimeout, true));
 		Duration remainingTime = currentOperationTracker == null 
 						? Duration.ofSeconds(0)
 						: (currentOperationTracker.elapsed().compareTo(this.operationTimeout) > 0) 
 								? Duration.ofSeconds(0) 
 								: this.operationTimeout.minus(currentOperationTracker.elapsed());
 		Duration retryInterval = this.underlyingFactory.getRetryPolicy().getNextRetryInterval(this.getClientId(), exception, remainingTime);
+
+		System.out.println("retryInterval: " +retryInterval + "remainingTime: " + remainingTime + "currentOperationTracker: " + currentOperationTracker.remaining());
 		
 		if (retryInterval != null)
 		{
@@ -462,7 +474,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	 */
 	private void sendFlow(final int credits)
 	{
-		int flowThreshold = (int) Math.min(this.getInitialPrefetchCount() * MessageReceiver.FLOW_THRESHOLD_PERCENT, MessageReceiver.MAX_FLOW_DEFAULT);
 		int tempFlow = 0;
 		
 		// slow down sending the flow - to make the protocol less-chat'y
@@ -470,23 +481,19 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		synchronized (this.flowSync)
 		{
 			this.currentFlow += credits;
-			if (this.currentFlow > flowThreshold)
+			if (this.currentFlow >= this.prefetchCount)
 			{
 				tempFlow = this.currentFlow;
-				
 				this.receiveLink.flow(this.currentFlow);
 				this.currentFlow = 0;
-				System.out.println("sendFlow[" + tempFlow + "], path[" + this.receivePath + "], current-link-credit[" + this.receiveLink.getCredit() + "], flowThreshold[" + flowThreshold + "]");
 			}
 		}
 		
 		if (tempFlow != 0)
 		{
-			this.lastCommunicatedAt = Instant.now();
-			
 			if(TRACE_LOGGER.isLoggable(Level.FINE))
 	        {
-	        	TRACE_LOGGER.log(Level.FINE, String.format("linkname[%s], updated-link-credit[%s], sendCredits[%s]", this.receiveLink.getName(), this.receiveLink.getCredit(), credits));
+	        	TRACE_LOGGER.log(Level.FINE, String.format("linkname[%s], updated-link-credit[%s], sentCredits[%s]", this.receiveLink.getName(), this.receiveLink.getCredit(), credits));
 	        }
 		}
 	}

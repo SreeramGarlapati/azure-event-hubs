@@ -25,11 +25,4 @@ public class CustomIOHandler extends IOHandler
         
         transport.bind(connection);
 	}
-	
-	@Override
-	public void onUnhandled(Event event)
-	{
-		System.out.println(event.getEventType().toString() + ", hasReactor?: " + (event.getReactor() == null));
-		super.onUnhandled(event);
-	}
 }

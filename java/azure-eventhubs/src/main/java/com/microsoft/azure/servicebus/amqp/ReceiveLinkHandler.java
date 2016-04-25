@@ -4,16 +4,16 @@
  */
 package com.microsoft.azure.servicebus.amqp;
 
-import java.util.*;
+import java.util.Locale;
 import java.util.logging.Level;
 
 import org.apache.qpid.proton.Proton;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
-import org.apache.qpid.proton.engine.*;
-import org.apache.qpid.proton.engine.impl.DeliveryImpl;
+import org.apache.qpid.proton.engine.Delivery;
+import org.apache.qpid.proton.engine.Event;
+import org.apache.qpid.proton.engine.Link;
+import org.apache.qpid.proton.engine.Receiver;
 import org.apache.qpid.proton.message.Message;
-
-import com.microsoft.azure.servicebus.ClientConstants;
 
 
 // ServiceBus <-> ProtonReactor interaction 
@@ -129,6 +129,8 @@ public final class ReceiveLinkHandler extends BaseLinkHandler
 			int msgSize = delivery.pending() + (64 * 1024);
 			byte[] buffer = new byte[msgSize];
 		    int read = receiveLink.recv(buffer, 0, msgSize);
+		    
+	        delivery.settle();
 	        
 		    if (read != -1)
 		    {
@@ -136,8 +138,6 @@ public final class ReceiveLinkHandler extends BaseLinkHandler
 		        msg.decode(buffer, 0, read);
 		        this.amqpReceiver.onReceiveComplete(msg);
 		    }
-		    
-	        delivery.settle();
 	    }
 		
     	if(TRACE_LOGGER.isLoggable(Level.FINEST) && receiveLink != null)
