@@ -4,19 +4,40 @@
  */
 package com.microsoft.azure.servicebus;
 
-import java.time.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
-import org.apache.qpid.proton.amqp.*;
+import org.apache.qpid.proton.amqp.Symbol;
+import org.apache.qpid.proton.amqp.UnknownDescribedType;
 import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.messaging.Target;
-import org.apache.qpid.proton.amqp.transport.*;
-import org.apache.qpid.proton.engine.*;
-import org.apache.qpid.proton.message.*;
+import org.apache.qpid.proton.amqp.transport.ErrorCondition;
+import org.apache.qpid.proton.amqp.transport.ReceiverSettleMode;
+import org.apache.qpid.proton.amqp.transport.SenderSettleMode;
+import org.apache.qpid.proton.engine.BaseHandler;
+import org.apache.qpid.proton.engine.Connection;
+import org.apache.qpid.proton.engine.EndpointState;
+import org.apache.qpid.proton.engine.Receiver;
+import org.apache.qpid.proton.engine.Session;
+import org.apache.qpid.proton.message.Message;
 
-import com.microsoft.azure.servicebus.amqp.*;
+import com.microsoft.azure.servicebus.amqp.AmqpConstants;
+import com.microsoft.azure.servicebus.amqp.IAmqpReceiver;
+import com.microsoft.azure.servicebus.amqp.ReceiveLinkHandler;
+import com.microsoft.azure.servicebus.amqp.SessionHandler;
 
 /**
  * Common Receiver that abstracts all amqp related details
@@ -52,7 +73,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private Object linkCreateLock;
 	private Exception lastKnownLinkError;
 	
-	private int currentFlow;
+	private int nextCreditToFlow;
 	private Object flowSync;
 	
 	private MessageReceiver(final MessagingFactory factory,
@@ -123,9 +144,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 				{
 					// workaround to push the sendflow-performative to reactor
 					MessageReceiver.this.receiveLink.flow(0);
-					
-					if (MessageReceiver.this.currentFlow >= MessageReceiver.this.prefetchCount)
-						MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
+					MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
 				}
 			}
 		};
@@ -182,7 +201,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	
 	public void setPrefetchCount(final int value)
 	{
-		// TODO: Fix setPretch scenario - remove whereever flow is assumed to be only default (300)
 		this.prefetchCount = value;
 	}
 		
@@ -276,6 +294,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		this.prefetchedMessages.add(message);
 		
 		this.underlyingFactory.getRetryPolicy().resetRetryCount(this.getClientId());
+		this.stuckTransportHandler.resetTimeoutErrorTracking();
 		
 		WorkItem<Collection<Message>> currentReceive = this.pendingReceives.poll();
 		if (currentReceive != null)
@@ -462,23 +481,21 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		return message;
 	}
 	
-	/**
-	 * set the link credit; thread-safe
-	 */
+	
+	// set the link credit; thread-safe
 	private void sendFlow(final int credits)
 	{
 		int tempFlow = 0;
 		
 		// slow down sending the flow - to make the protocol less-chat'y
-		// will not send any flow if totalCredits=0 (@param credits + currentLinkCredit)
 		synchronized (this.flowSync)
 		{
-			this.currentFlow += credits;
-			if (this.currentFlow >= this.prefetchCount)
+			this.nextCreditToFlow += credits;
+			if (this.nextCreditToFlow >= this.prefetchCount)
 			{
-				tempFlow = this.currentFlow;
-				this.receiveLink.flow(this.currentFlow);
-				this.currentFlow = 0;
+				tempFlow = this.nextCreditToFlow;
+				this.receiveLink.flow(this.nextCreditToFlow);
+				this.nextCreditToFlow = 0;
 			}
 		}
 		

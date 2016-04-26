@@ -6,10 +6,11 @@ package com.microsoft.azure.servicebus;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -39,7 +40,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	public static final Duration DefaultOperationTimeout = Duration.ofSeconds(60); 
 	
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
-	
+	private static final int TIMEOUT_ERROR_THRESHOLD_IN_SECS = 180;
 	private final Object connectionLock = new Object();
 	private final String hostName;
 	
@@ -55,8 +56,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	private CompletableFuture<Connection> openConnection;
 	private LinkedList<Link> registeredLinks;
 	private TimeoutTracker connectionCreateTracker;
-	private AtomicInteger timeoutErrorCount;
-	private int timeoutRetryThreshold = 3;
+	private Instant timeoutErrorStart;
 	
 	/**
 	 * @param reactor parameter reactor is purely for testing purposes and the SDK code should always set it to null
@@ -65,7 +65,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	{
 		super("MessagingFactory".concat(StringUtil.getRandomString()));
 		this.hostName = builder.getEndpoint().getHost();
-		this.timeoutErrorCount = new AtomicInteger(0);
+		this.timeoutErrorStart = null;
 		
 		this.startReactor(new ReactorHandler()
 		{
@@ -372,8 +372,9 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	@Override
 	public void reportTimeoutError()
 	{
-		int timeoutRetryCount = this.timeoutErrorCount.incrementAndGet();
-		if (timeoutRetryCount >= this.timeoutRetryThreshold)
+		if (this.timeoutErrorStart == null)
+			this.timeoutErrorStart = Instant.now();
+		else if (this.timeoutErrorStart.isBefore(Instant.now().minus(TIMEOUT_ERROR_THRESHOLD_IN_SECS, ChronoUnit.SECONDS)))
 		{
 			this.resetConnection();
 			this.resetTimeoutErrorTracking();
@@ -383,6 +384,6 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	@Override
 	public void resetTimeoutErrorTracking()
 	{
-		this.timeoutErrorCount.set(0);
+		this.timeoutErrorStart = null;
 	}	
 }
