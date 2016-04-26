@@ -4,10 +4,10 @@
  */
 package com.microsoft.azure.servicebus;
 
-// this helps recover client from - the underlying TransportStackStuck situation
+// recover client from the underlying TransportStack-Stuck situation
 public interface ITimeoutErrorHandler
 {
 	public void reportTimeoutError();
 	
-	public void resetTimeoutErrorCount();
+	public void resetTimeoutErrorTracking();
 }

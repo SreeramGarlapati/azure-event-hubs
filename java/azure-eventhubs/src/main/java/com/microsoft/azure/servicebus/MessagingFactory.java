@@ -376,11 +376,12 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 		if (timeoutRetryCount >= this.timeoutRetryThreshold)
 		{
 			this.resetConnection();
+			this.resetTimeoutErrorTracking();
 		}
 	}
 
 	@Override
-	public void resetTimeoutErrorCount()
+	public void resetTimeoutErrorTracking()
 	{
 		this.timeoutErrorCount.set(0);
 	}	

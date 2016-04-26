@@ -242,7 +242,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			}
 			
 			this.lastKnownLinkError = null;
-			this.stuckTransportHandler.resetTimeoutErrorCount();
 			
 			// re-open link always starts from the last received offset
 			this.offsetInclusive = false;
@@ -263,7 +262,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			
 			this.lastKnownLinkError = exception;
 		}
-		
+
+		this.stuckTransportHandler.resetTimeoutErrorTracking();
 		synchronized (this.linkCreateLock)
 		{
 			this.linkCreateScheduled = false;

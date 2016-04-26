@@ -4,10 +4,8 @@
  */
 package com.microsoft.azure.servicebus;
 
-import java.time.*;
-import java.util.concurrent.*;
-
-import org.apache.qpid.proton.engine.HandlerException;
+import java.time.Duration;
+import java.util.concurrent.ConcurrentHashMap;
 
 // TODO: SIMPLIFY retryPolicy - ConcurrentHashMap is not needed
 public abstract class RetryPolicy
@@ -40,11 +38,6 @@ public abstract class RetryPolicy
 		if (exception == null)
 		{
 			throw new IllegalArgumentException("exception cannot be null");
-		}
-		
-		if (exception instanceof HandlerException)
-		{
-			return true;
 		}
 		
 		if (exception instanceof ServiceBusException)
