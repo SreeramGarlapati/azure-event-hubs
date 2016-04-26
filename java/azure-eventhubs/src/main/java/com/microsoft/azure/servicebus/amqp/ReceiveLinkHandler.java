@@ -15,6 +15,8 @@ import org.apache.qpid.proton.engine.Link;
 import org.apache.qpid.proton.engine.Receiver;
 import org.apache.qpid.proton.message.Message;
 
+import com.microsoft.azure.servicebus.ClientConstants;
+
 
 // ServiceBus <-> ProtonReactor interaction 
 // handles all recvLink - reactor events
@@ -126,7 +128,7 @@ public final class ReceiveLinkHandler extends BaseLinkHandler
 		{
 			// delivery.pending() should return current deliveries pending bytes to be read.
 			// we ran into an issue with proton-j where delivery.pending() returned lessthan available bytes and hence the below Math.max(...)
-			int msgSize = delivery.pending() + (64 * 1024);
+			int msgSize = delivery.pending() + ClientConstants.MAX_FRAME_SIZE_BYTES;
 			byte[] buffer = new byte[msgSize];
 		    int read = receiveLink.recv(buffer, 0, msgSize);
 		    

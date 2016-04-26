@@ -291,7 +291,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	void resetConnection()
 	{		
 		this.reactor.free();
-		this.onReactorError(new ServiceBusException(true, "java client invoked resetConnection"));
+		this.onReactorError(new ServiceBusException(true, "Client invoked connection reset."));
 	}
 	
 	@Override
