@@ -144,7 +144,18 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 				{
 					// workaround to push the sendflow-performative to reactor
 					MessageReceiver.this.receiveLink.flow(0);
-					MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
+					
+					// we have a known issue with proton libraries where transport layer is stuck while Sending Flow
+					// to workaround this - we built a mechanism to reset the transport whenever we encounter this
+					// https://issues.apache.org/jira/browse/PROTON-1185
+					boolean shouldSendFlow = false;
+					synchronized(MessageReceiver.this.flowSync)
+					{
+						shouldSendFlow = MessageReceiver.this.nextCreditToFlow == 0;
+					}
+					
+					if (shouldSendFlow)
+						MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
 				}
 			}
 		};
