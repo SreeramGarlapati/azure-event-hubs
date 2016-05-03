@@ -148,13 +148,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 					// we have a known issue with proton libraries where transport layer is stuck while Sending Flow
 					// to workaround this - we built a mechanism to reset the transport whenever we encounter this
 					// https://issues.apache.org/jira/browse/PROTON-1185
-					boolean shouldSendFlow = false;
+					boolean shouldReportTimeout = false;
 					synchronized(MessageReceiver.this.flowSync)
 					{
-						shouldSendFlow = MessageReceiver.this.nextCreditToFlow == 0;
+						shouldReportTimeout = (MessageReceiver.this.nextCreditToFlow == 0);
 					}
 					
-					if (shouldSendFlow)
+					if (shouldReportTimeout)
 						MessageReceiver.this.stuckTransportHandler.reportTimeoutError();
 				}
 			}

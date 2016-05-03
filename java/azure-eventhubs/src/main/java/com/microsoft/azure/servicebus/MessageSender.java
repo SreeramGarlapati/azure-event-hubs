@@ -716,12 +716,14 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	private void throwSenderTimeout(CompletableFuture<Void> pendingSendWork, Exception lastKnownException)
 	{
 		Exception cause = lastKnownException == null ? this.lastKnownLinkError : lastKnownException;
-		boolean isClientSideTimeout = (cause != null && cause instanceof ServiceBusException);
+		boolean isClientSideTimeout = (cause == null || !(cause instanceof ServiceBusException));
 		ServiceBusException exception = isClientSideTimeout
-				? (ServiceBusException) cause :
-					new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, " at ", ZonedDateTime.now(), cause));
+				? new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, " at ", ZonedDateTime.now(), cause)) 
+				: (ServiceBusException) cause;
 		if (isClientSideTimeout)
+		{
 			this.timeoutErrorHandler.reportTimeoutError();
+		}
 		
 		ExceptionUtil.completeExceptionally(pendingSendWork, exception, this);
 	}
