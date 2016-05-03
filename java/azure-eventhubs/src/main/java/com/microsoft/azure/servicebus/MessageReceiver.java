@@ -6,6 +6,7 @@ package com.microsoft.azure.servicebus;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedList;
@@ -567,7 +568,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 						if (!linkOpen.getWork().isDone())
 						{
 							Exception operationTimedout = new TimeoutException(
-									String.format(Locale.US, "%s operation on ReceiveLink(%s) to path(%s) timed out", "Open", MessageReceiver.this.receiveLink.getName(), MessageReceiver.this.receivePath),
+									String.format(Locale.US, "%s operation on ReceiveLink(%s) to path(%s) timed out at %s.", "Open", MessageReceiver.this.receiveLink.getName(), MessageReceiver.this.receivePath, ZonedDateTime.now()),
 									MessageReceiver.this.lastKnownLinkError);
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))
 							{
@@ -596,7 +597,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 						{
 							if (!linkClose.isDone())
 							{
-								Exception operationTimedout = new TimeoutException(String.format(Locale.US, "Receive Link(%s) %s() timed out", MessageReceiver.this.receiveLink.getName(), "Close"));
+								Exception operationTimedout = new TimeoutException(String.format(Locale.US, "%s operation on Receive Link(%s) timed out at %s", "Close", MessageReceiver.this.receiveLink.getName(), ZonedDateTime.now()));
 								if (TRACE_LOGGER.isLoggable(Level.WARNING))
 								{
 									TRACE_LOGGER.log(Level.WARNING, 

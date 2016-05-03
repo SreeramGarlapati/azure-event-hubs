@@ -636,7 +636,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 						if (!MessageSender.this.linkFirstOpen.isDone())
 						{
 							Exception operationTimedout = new TimeoutException(
-									String.format(Locale.US, "Open operation on SendLink(%s) on Entity(%s) timed out.",	MessageSender.this.sendLink.getName(), MessageSender.this.getSendPath()),
+									String.format(Locale.US, "Open operation on SendLink(%s) on Entity(%s) timed out at %s.",	MessageSender.this.sendLink.getName(), MessageSender.this.getSendPath(), ZonedDateTime.now().toString()),
 									MessageSender.this.lastKnownLinkError);
 
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))

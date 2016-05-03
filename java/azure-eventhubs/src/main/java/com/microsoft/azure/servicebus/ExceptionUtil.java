@@ -114,6 +114,6 @@ final class ExceptionUtil
 	
 	static String getTrackingIDAndTimeToLog()
 	{
-		return String.format(Locale.US, "TrackingId: %s, at %s", UUID.randomUUID().toString(), ZonedDateTime.now()); 
+		return String.format(Locale.US, "TrackingId: %s, at: %s", UUID.randomUUID().toString(), ZonedDateTime.now()); 
 	}
 }
