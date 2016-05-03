@@ -71,8 +71,8 @@ public class SendLinkHandler extends BaseLinkHandler
             		"], delivery.isBuffered[" + delivery.isBuffered() +"], delivery.id[" + delivery.getTag() + "]");
         }
 		
-		delivery.settle();
 		msgSender.onSendComplete(delivery.getTag(), delivery.getRemoteState());
+		delivery.settle();
 	}
 
 	@Override
