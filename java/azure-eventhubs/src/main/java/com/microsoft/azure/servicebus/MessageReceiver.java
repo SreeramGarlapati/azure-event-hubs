@@ -16,7 +16,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -388,9 +387,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			
 			return null;
 		}
-        catch (TimeoutException exception)
+        catch (java.util.concurrent.TimeoutException exception)
         {
-        	this.onError(new ServiceBusException(false, "Connection creation timed out.", exception));
+        	this.onError(new TimeoutException("Connection creation timed out.", exception));
         	return null;
         }
         
@@ -567,11 +566,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 					{
 						if (!linkOpen.getWork().isDone())
 						{
-							Exception cause = MessageReceiver.this.lastKnownLinkError;
-							Exception operationTimedout = new ServiceBusException(
-									cause != null && cause instanceof ServiceBusException ? ((ServiceBusException) cause).getIsTransient() : ClientConstants.DEFAULT_IS_TRANSIENT,
-									String.format(Locale.US, "ReceiveLink(%s) %s() on path(%s) timed out", MessageReceiver.this.receiveLink.getName(), "Open", MessageReceiver.this.receivePath),
-									cause);
+							Exception operationTimedout = new TimeoutException(
+									String.format(Locale.US, "%s operation on ReceiveLink(%s) to path(%s) timed out", "Open", MessageReceiver.this.receiveLink.getName(), MessageReceiver.this.receivePath),
+									MessageReceiver.this.lastKnownLinkError);
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))
 							{
 								TRACE_LOGGER.log(Level.WARNING, 

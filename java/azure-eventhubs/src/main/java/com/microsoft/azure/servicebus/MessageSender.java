@@ -16,7 +16,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -584,9 +583,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			
 			return null;
 		}
-		catch (TimeoutException exception)
+		catch (java.util.concurrent.TimeoutException exception)
         {
-        	this.onError(new ServiceBusException(false, "Connection creation timed out.", exception));
+        	this.onError(new TimeoutException("Connection creation timed out.", exception));
         	return null;
         }
 		
@@ -635,9 +634,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 					{
 						if (!MessageSender.this.linkFirstOpen.isDone())
 						{
-							Exception operationTimedout = new ServiceBusException(true,
-									String.format(Locale.US, "SendLink(%s).open() on Entity(%s) timed out",
-											MessageSender.this.sendLink.getName(), MessageSender.this.getSendPath()));
+							Exception operationTimedout = new TimeoutException(
+									String.format(Locale.US, "Open operation on SendLink(%s) on Entity(%s) timed out.",	MessageSender.this.sendLink.getName(), MessageSender.this.getSendPath()),
+									MessageSender.this.lastKnownLinkError);
 
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))
 							{
@@ -718,8 +717,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		Exception cause = lastKnownException == null ? this.lastKnownLinkError : lastKnownException;
 		ServiceBusException exception = (cause != null && cause instanceof ServiceBusException) 
 				? (ServiceBusException) cause :
-					new ServiceBusException(ClientConstants.DEFAULT_IS_TRANSIENT, 
-			 String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, "at", Instant.now(), cause));
+					new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, "at", Instant.now(), cause));
 		ExceptionUtil.completeExceptionally(pendingSendWork, exception, this);
 	}
 }
