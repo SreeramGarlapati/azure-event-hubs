@@ -7,6 +7,7 @@ package com.microsoft.azure.servicebus;
 import java.nio.BufferOverflowException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZonedDateTime;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
@@ -717,7 +718,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		Exception cause = lastKnownException == null ? this.lastKnownLinkError : lastKnownException;
 		ServiceBusException exception = (cause != null && cause instanceof ServiceBusException) 
 				? (ServiceBusException) cause :
-					new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, "at", Instant.now(), cause));
+					new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, " at ", ZonedDateTime.now(), cause));
 		ExceptionUtil.completeExceptionally(pendingSendWork, exception, this);
 	}
 }

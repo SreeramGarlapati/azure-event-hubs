@@ -4,6 +4,9 @@
  */
 package com.microsoft.azure.servicebus;
 
+import java.time.ZonedDateTime;
+import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
@@ -107,5 +110,10 @@ final class ExceptionUtil
 		return (amqpError == ClientConstants.SERVER_BUSY_ERROR 
 				|| amqpError == ClientConstants.TIMEOUT_ERROR 
 				|| amqpError == AmqpErrorCode.ResourceLimitExceeded);
+	}
+	
+	static String getTrackingIDAndTimeToLog()
+	{
+		return String.format(Locale.US, "TrackingId: %s, at %s", UUID.randomUUID().toString(), ZonedDateTime.now()); 
 	}
 }

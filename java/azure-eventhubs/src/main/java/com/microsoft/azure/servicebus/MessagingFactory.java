@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -36,7 +37,6 @@ import com.microsoft.azure.servicebus.amqp.ReactorHandler;
  */
 public class MessagingFactory extends ClientEntity implements IAmqpConnection, IConnectionFactory, ITimeoutErrorHandler
 {
-	
 	public static final Duration DefaultOperationTimeout = Duration.ofSeconds(60); 
 	
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
@@ -73,7 +73,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 			public void onReactorFinal(Event e)
 		    {
 				super.onReactorFinal(e);
-				MessagingFactory.this.onReactorError(new ServiceBusException(true, "Reactor finalized."));
+				MessagingFactory.this.onReactorError(new ServiceBusException(true, String.format(Locale.US, "Reactor finalized, %s", ExceptionUtil.getTrackingIDAndTimeToLog())));
 		    }
 		});
 		
@@ -133,7 +133,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 							public void onReactorFinal(Event e)
 						    {
 								super.onReactorFinal(e);
-								MessagingFactory.this.onReactorError(new ServiceBusException(true, "Reactor finalized."));
+								MessagingFactory.this.onReactorError(new ServiceBusException(true, String.format(Locale.US, "Reactor finalized, %s", ExceptionUtil.getTrackingIDAndTimeToLog())));
 						    }
 						});
 					}
@@ -144,7 +144,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 					
 					if(this.openConnection != null && !this.openConnection.isDone())
 					{
-						this.openConnection.completeExceptionally(new ServiceBusException(false, "Connection creation timedout."));
+						this.openConnection.completeExceptionally(new TimeoutException(String.format(Locale.US, "Connection creation timedout, %s", ExceptionUtil.getTrackingIDAndTimeToLog())));
 					}
 
 					this.openConnection = new CompletableFuture<Connection>();
@@ -300,7 +300,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	void resetConnection()
 	{		
 		this.reactor.free();
-		this.onReactorError(new ServiceBusException(true, "Client invoked connection reset."));
+		this.onReactorError(new ServiceBusException(true, String.format(Locale.US, "Client invoked connection reset, %s", ExceptionUtil.getTrackingIDAndTimeToLog())));
 	}
 	
 	@Override
@@ -378,7 +378,10 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 					TRACE_LOGGER.log(Level.WARNING, builder.toString());
 			    }
 				
-				MessagingFactory.this.onReactorError(new ServiceBusException(true, cause));
+				MessagingFactory.this.onReactorError(new ServiceBusException(
+						true,
+						String.format(Locale.US, "%s, %s", StringUtil.isNullOrEmpty(cause.getMessage()) ? "Reactor encountered unrecoverable error" : cause.getMessage(), ExceptionUtil.getTrackingIDAndTimeToLog()),
+						cause));
 			}
 		}
 	}
