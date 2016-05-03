@@ -467,13 +467,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
         return receiver;
 	}
 	
+	// CONTRACT: message should be delivered to the caller of MessageReceiver.receive() only via Poll on prefetchqueue
 	private Message pollPrefetchQueue()
 	{
-		// message should be delivered only via Poll on prefetchqueue
-		// message lastReceivedOffset should be update upon each poll - as recreateLink will depend on this 
 		Message message = this.prefetchedMessages.poll();
 		if (message != null)
 		{
+			// message lastReceivedOffset should be up-to-date upon each poll - as recreateLink will depend on this 
 			this.lastReceivedOffset = message.getMessageAnnotations().getValue().get(AmqpConstants.OFFSET).toString();
 			this.sendFlow(1);
 		}

@@ -245,13 +245,22 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	
 	private void onReactorError(Exception cause)
 	{
+		Connection currentConnection = this.connection;
+		
 		if (!this.open.isDone())
 		{
-			this.onOpenComplete(cause);
+			try
+			{
+				this.onOpenComplete(cause);
+			}
+			finally
+			{
+				currentConnection.free();
+			}
+			
 			return;
 		}
 
-		Connection currentConnection = this.connection;
 		
 		Iterator<Link> literator = this.registeredLinks.iterator();
 		while (literator.hasNext())
@@ -343,13 +352,30 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 				
 				if(TRACE_LOGGER.isLoggable(Level.WARNING))
 			    {
-					TRACE_LOGGER.log(Level.WARNING, "UnHandled exception while processing events in reactor:");
-					TRACE_LOGGER.log(Level.WARNING, handlerException.getMessage());
+					StringBuilder builder = new StringBuilder();
+					builder.append("UnHandled exception while processing events in reactor:");
+					builder.append(System.lineSeparator());
+					builder.append(handlerException.getMessage());
 					if (handlerException.getStackTrace() != null)
 						for (StackTraceElement ste: handlerException.getStackTrace())
 						{
-							TRACE_LOGGER.log(Level.WARNING, ste.toString());
+							builder.append(System.lineSeparator());
+							builder.append(ste.toString());
 						}
+					
+					Throwable innerException = handlerException.getCause();
+					if (innerException != null)
+					{
+						builder.append("Cause: " + innerException.getMessage());
+						if (innerException.getStackTrace() != null)
+							for (StackTraceElement ste: innerException.getStackTrace())
+							{
+								builder.append(System.lineSeparator());
+								builder.append(ste.toString());
+							}
+					}
+					
+					TRACE_LOGGER.log(Level.WARNING, builder.toString());
 			    }
 				
 				MessagingFactory.this.onReactorError(new ServiceBusException(true, cause));
@@ -373,7 +399,9 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	public void reportTimeoutError()
 	{
 		if (this.timeoutErrorStart == null)
+		{
 			this.timeoutErrorStart = Instant.now();
+		}
 		else if (this.timeoutErrorStart.isBefore(Instant.now().minus(TIMEOUT_ERROR_THRESHOLD_IN_SECS, ChronoUnit.SECONDS)))
 		{
 			this.resetConnection();

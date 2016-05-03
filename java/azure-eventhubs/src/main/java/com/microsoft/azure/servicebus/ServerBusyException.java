@@ -6,6 +6,8 @@ package com.microsoft.azure.servicebus;
 
 public class ServerBusyException extends ServiceBusException 
 {
+	private static final long serialVersionUID = 1L;
+
 	public ServerBusyException()
 	{
 		super(true);
