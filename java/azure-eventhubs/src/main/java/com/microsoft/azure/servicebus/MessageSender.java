@@ -504,6 +504,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			{
 				this.lastKnownLinkError = null;
 				this.retryPolicy.resetRetryCount(this.getClientId());
+				this.timeoutErrorHandler.resetTimeoutErrorTracking();
 				this.pendingSendWaiters.remove(deliveryTag);
 				pendingSend.complete(null);
 			}
