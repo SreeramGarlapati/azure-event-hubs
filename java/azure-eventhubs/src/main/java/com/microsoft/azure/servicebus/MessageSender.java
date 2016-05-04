@@ -370,9 +370,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		if (completionException == null)
 		{
 			this.openLinkTracker = null;
-			this.retryPolicy.resetRetryCount(this.getClientId());
-			
+
 			this.lastKnownLinkError = null;
+			this.retryPolicy.resetRetryCount(this.getClientId());
 			
 			// assumption here is that TimeoutErrorHandler reset's the link
 			this.timeoutErrorHandler.resetTimeoutErrorTracking();
@@ -689,6 +689,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	@Override
 	public void onFlow()
 	{
+		this.timeoutErrorHandler.resetTimeoutErrorTracking();
+		this.lastKnownLinkError = null;
+		
 		int updatedCredit = 0;
 		synchronized (this.sendCall)
 		{
@@ -703,8 +706,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 							MessageSender.this.getClientId(), MessageSender.this.sendPath, updatedCredit, this.pendingSendsWaitingForCredit.size(), this.pendingSendWaiters.size()));
 		
 		this.linkCredit.addAndGet(updatedCredit);
-		this.timeoutErrorHandler.resetTimeoutErrorTracking();
-		this.lastKnownLinkError = null;
 		
 		while (!this.pendingSendsWaitingForCredit.isEmpty() && this.linkCredit.get() > 0)
 		{
@@ -719,9 +720,16 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	
 	private void throwSenderTimeout(CompletableFuture<Void> pendingSendWork, Exception lastKnownException)
 	{
-		Exception cause = lastKnownException == null 
-				? ((this.lastKnownLinkError != null && this.lastKnownErrorReportedAt.isAfter(Instant.now().minusSeconds(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS))) ? this.lastKnownLinkError : null)  
-				: lastKnownException;
+		Exception cause = lastKnownException;
+		if (lastKnownException == null && this.lastKnownLinkError != null)
+		{
+			boolean isServerBusy = ((this.lastKnownLinkError instanceof ServerBusyException) 
+					&& (this.lastKnownErrorReportedAt.isAfter(Instant.now().minusSeconds(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS))));  
+			cause = isServerBusy || (this.lastKnownErrorReportedAt.isAfter(Instant.now().minusMillis(this.operationTimeout.toMillis()))) 
+					? this.lastKnownLinkError 
+					: null;
+		}
+				
 		boolean isClientSideTimeout = (cause == null || !(cause instanceof ServiceBusException));
 		ServiceBusException exception = isClientSideTimeout
 				? new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, " at ", ZonedDateTime.now(), cause)) 

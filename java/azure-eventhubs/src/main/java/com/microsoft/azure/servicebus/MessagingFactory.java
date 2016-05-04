@@ -57,6 +57,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	private LinkedList<Link> registeredLinks;
 	private TimeoutTracker connectionCreateTracker;
 	private Instant timeoutErrorStart;
+	private Object resetConnectionSync;
 	
 	/**
 	 * @param reactor parameter reactor is purely for testing purposes and the SDK code should always set it to null
@@ -65,7 +66,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	{
 		super("MessagingFactory".concat(StringUtil.getRandomString()));
 		this.hostName = builder.getEndpoint().getHost();
-		this.timeoutErrorStart = null;
+		this.timeoutErrorStart = Instant.MAX;
 		
 		this.startReactor(new ReactorHandler()
 		{
@@ -80,6 +81,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 		this.operationTimeout = builder.getOperationTimeout();
 		this.retryPolicy = builder.getRetryPolicy();
 		this.registeredLinks = new LinkedList<Link>();
+		this.resetConnectionSync = new Object();
 	}
 	
 	String getHostName()
@@ -401,20 +403,26 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	@Override
 	public void reportTimeoutError()
 	{
-		if (this.timeoutErrorStart == null)
+		if (this.timeoutErrorStart.equals(Instant.MAX))
 		{
 			this.timeoutErrorStart = Instant.now();
 		}
 		else if (this.timeoutErrorStart.isBefore(Instant.now().minus(TIMEOUT_ERROR_THRESHOLD_IN_SECS, ChronoUnit.SECONDS)))
 		{
-			this.resetConnection();
-			this.resetTimeoutErrorTracking();
+			synchronized (this.resetConnectionSync)
+			{
+				if (this.timeoutErrorStart.isBefore(Instant.now().minus(TIMEOUT_ERROR_THRESHOLD_IN_SECS, ChronoUnit.SECONDS)))
+				{
+					this.resetTimeoutErrorTracking();
+					this.resetConnection();
+				}
+			}
 		}
 	}
 
 	@Override
 	public void resetTimeoutErrorTracking()
 	{
-		this.timeoutErrorStart = null;
+		this.timeoutErrorStart = Instant.MAX;
 	}	
 }
