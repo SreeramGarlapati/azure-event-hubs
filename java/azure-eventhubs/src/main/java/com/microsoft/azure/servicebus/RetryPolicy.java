@@ -102,8 +102,8 @@ public abstract class RetryPolicy
 	{
 		synchronized (this.serverBusySync)
 		{
-			return this.isServerBusy &&
-					Instant.now().isBefore(this.lastServerBusyReportedTime.plus(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS, ChronoUnit.SECONDS));
+			return (this.isServerBusy &&
+					Instant.now().isBefore(this.lastServerBusyReportedTime.plus(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS, ChronoUnit.SECONDS)));
 		}	
 	}
 	
