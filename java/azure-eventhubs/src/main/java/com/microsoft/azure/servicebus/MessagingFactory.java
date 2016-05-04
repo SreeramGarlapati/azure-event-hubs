@@ -40,7 +40,7 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	public static final Duration DefaultOperationTimeout = Duration.ofSeconds(60); 
 	
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
-	private static final int TIMEOUT_ERROR_THRESHOLD_IN_SECS = 90;
+	private static final int TIMEOUT_ERROR_THRESHOLD_IN_SECS = 180;
 	private final Object connectionLock = new Object();
 	private final String hostName;
 	
