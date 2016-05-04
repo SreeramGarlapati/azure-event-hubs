@@ -76,6 +76,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	private boolean linkCreateScheduled;
 	private Object linkCreateLock;
 	private Exception lastKnownLinkError;
+	private Instant lastKnownErrorReportedAt;
 	private Object sendCall;
 	
 	public static CompletableFuture<MessageSender> create(
@@ -107,6 +108,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		this.operationTimeout = factory.getOperationTimeout();
 		this.timerTimeout = this.operationTimeout.getSeconds() > 9 ? this.operationTimeout.dividedBy(3) : Duration.ofSeconds(5);
 		this.lastKnownLinkError = null;
+		this.lastKnownErrorReportedAt = Instant.EPOCH;
 		
 		this.retryPolicy = factory.getRetryPolicy();
 		
@@ -433,6 +435,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		if (completionException != null)
 		{
 			this.lastKnownLinkError = completionException;
+			this.lastKnownErrorReportedAt = Instant.now();
 		}
 		
 		if (retryInterval != null)
@@ -517,6 +520,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				if (ExceptionUtil.isGeneralSendError(error.getCondition()))
 				{
 					this.lastKnownLinkError = exception;
+					this.lastKnownErrorReportedAt = Instant.now();
 				}
 				
 				Duration retryInterval = this.retryPolicy.getNextRetryInterval(
@@ -638,7 +642,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 						{
 							Exception operationTimedout = new TimeoutException(
 									String.format(Locale.US, "Open operation on SendLink(%s) on Entity(%s) timed out at %s.",	MessageSender.this.sendLink.getName(), MessageSender.this.getSendPath(), ZonedDateTime.now().toString()),
-									MessageSender.this.lastKnownLinkError);
+									MessageSender.this.lastKnownErrorReportedAt.isAfter(Instant.now().minusSeconds(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS)) ? MessageSender.this.lastKnownLinkError : null);
 
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))
 							{
@@ -715,7 +719,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	
 	private void throwSenderTimeout(CompletableFuture<Void> pendingSendWork, Exception lastKnownException)
 	{
-		Exception cause = lastKnownException == null ? this.lastKnownLinkError : lastKnownException;
+		Exception cause = lastKnownException == null 
+				? ((this.lastKnownLinkError != null && this.lastKnownErrorReportedAt.isAfter(Instant.now().minusSeconds(ClientConstants.SERVER_BUSY_BASE_SLEEP_TIME_IN_SECS))) ? this.lastKnownLinkError : null)  
+				: lastKnownException;
 		boolean isClientSideTimeout = (cause == null || !(cause instanceof ServiceBusException));
 		ServiceBusException exception = isClientSideTimeout
 				? new TimeoutException(String.format(Locale.US, "%s %s %s.", MessageSender.SEND_TIMED_OUT, " at ", ZonedDateTime.now(), cause)) 
