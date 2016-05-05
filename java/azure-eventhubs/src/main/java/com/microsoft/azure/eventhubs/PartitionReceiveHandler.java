@@ -11,6 +11,18 @@ package com.microsoft.azure.eventhubs;
  */
 public abstract class PartitionReceiveHandler
 {
+	private int maxEventCount;
+	
+	int getMaxEventCount()
+	{
+		return maxEventCount;
+	}
+	
+	protected final void setMaxEventCount(final int value)
+	{
+		this.maxEventCount = value;
+	}
+	
     /**
      * user should implement this method to specify the action to be performed on the received events.
      * @param   events  the list of fetched events from the corresponding PartitionReceiver.
@@ -18,7 +30,16 @@ public abstract class PartitionReceiveHandler
      */
 	public abstract void onReceive(Iterable<EventData> events);
 	
+	/**
+	 * Implement this method to Listen to recoverable or retry'able errors encountered while running the onReceive handler.
+	 * The errors reported by {@link PartitionReceiveHandler#onError} are transient and are recoverable.
+	 * @param error transient error encountered while executing the {@link PartitionReceiveHandler} pump 
+	 */
 	public abstract void onError(Throwable error);
 	
+	/**
+	 * Implement this method to Listen to errors which lead to Closure of the {@link PartitionReceiveHandler} pump.
+	 * @param error fatal error encountered while running the {@link PartitionReceiveHandler} pump
+	 */
 	public abstract void onClose(Throwable error);
 }
