@@ -13,6 +13,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import com.microsoft.azure.eventhubs.EventData;
 import com.microsoft.azure.eventhubs.EventHubClient;
@@ -22,6 +24,8 @@ public class HighThruputSender {
 	public final static int BATCH_FLUSH_INTERVAL_MS = 20;
 	public final static int MAX_BATCH_SIZE = 5100;
 	public final static int MAX_MSG_SIZE = 210000;
+	
+	private final static Logger logger = Logger.getLogger(HighThruputSender.class.getName());
 	
 	private final static ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(Runtime.getRuntime().availableProcessors());
 	
@@ -75,7 +79,8 @@ public class HighThruputSender {
 			if(!events.isEmpty())
 			{
 				CompletableFuture<Void> realSend = sender.send(events);
-				System.out.println(String.format(Locale.US, "Sending batchSize: %s, total messages Size: %s", batchSize, aggregatedSize));
+				if (logger.isLoggable(Level.FINE))
+					logger.log(Level.FINE, String.format(Locale.US, "Sending batchSize: %s, total messages Size: %s", batchSize, aggregatedSize));
 				
 				realSend.thenApplyAsync(new Function<Void, Void>() {
 					@Override
