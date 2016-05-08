@@ -32,14 +32,14 @@ public class BatchSender {
 	private final EventHubClient sender;
 	private final ConcurrentLinkedQueue<SendWork> pendingSends;
 	
-	private HighThruputSender(final EventHubClient eventHubClient) {
+	private BatchSender(final EventHubClient eventHubClient) {
 		this.sender = eventHubClient;
 		this.pendingSends = new ConcurrentLinkedQueue<SendWork>();
 		scheduler.scheduleWithFixedDelay(new Sender(), 0, BATCH_FLUSH_INTERVAL_MS, TimeUnit.MILLISECONDS);
 	}
 	
-	public static HighThruputSender create(final EventHubClient eventHubClient) {
-		return new HighThruputSender(eventHubClient);
+	public static BatchSender create(final EventHubClient eventHubClient) {
+		return new BatchSender(eventHubClient);
 	}
 	
 	public CompletableFuture<Void> send(final EventData edata) {
