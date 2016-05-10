@@ -19,6 +19,7 @@ import java.util.logging.Logger;
 
 import com.microsoft.azure.eventhubs.EventData;
 import com.microsoft.azure.eventhubs.EventHubClient;
+import com.microsoft.azure.servicebus.amqp.AmqpConstants;
 
 /**
  * Wraps up {@link EventHubClient} send APIs to provide Batching semantics.
@@ -116,6 +117,11 @@ public class BatchSender {
 							aggregatedSize += ((property.getKey().length() + property.getValue().length()) * 2); 
 						}
 					}
+					
+					if (partitionKey.compareTo(NO_PARTITION_KEY) != 0) {
+						aggregatedSize += (AmqpConstants.PARTITION_KEY.toString().length() * 2);
+						aggregatedSize += (partitionKey.length() * 2);
+					}
 				}
 				
 				if(!events.isEmpty())
@@ -125,7 +131,7 @@ public class BatchSender {
 							: sender.send(events, partitionKey);
 
 					if (logger.isLoggable(Level.FINE))
-						logger.log(Level.FINE, String.format(Locale.US, "Sending batchSize: %s, total messages Size: %s", batchSize, aggregatedSize));
+						logger.log(Level.FINE, String.format(Locale.US, "Sending batchSize: %s, total messages Size: %s, partitionKey: %s", batchSize, aggregatedSize, partitionKey));
 					
 					realSend
 					.thenApplyAsync(new Function<Void, Void>() {
