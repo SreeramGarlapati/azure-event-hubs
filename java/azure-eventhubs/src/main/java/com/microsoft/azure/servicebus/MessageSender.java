@@ -9,18 +9,17 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.Locale;
-import java.util.Map;
 import java.util.UUID;
 import java.util.Map.Entry;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -66,8 +65,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	private final Runnable operationTimer;
 	private final Duration timerTimeout;
 	
-	private ConcurrentHashMap<String, ReplayableWorkItem<Void>> pendingSendWaiters;
-	private ConcurrentLinkedQueue<String> pendingSendsWaitingForCredit;
+	private ConcurrentHashMap<String, ReplayableWorkItem<Void>> pendingSendsData;
+	private ConcurrentLinkedDeque<String> pendingSendsWaitingForCredit;
 	
 	private Sender sendLink;
 	private CompletableFuture<MessageSender> linkFirstOpen; 
@@ -112,8 +111,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		
 		this.retryPolicy = factory.getRetryPolicy();
 		
-		this.pendingSendWaiters = new ConcurrentHashMap<String, ReplayableWorkItem<Void>>();
-		this.pendingSendsWaitingForCredit = new ConcurrentLinkedQueue<String>();
+		this.pendingSendsData = new ConcurrentHashMap<String, ReplayableWorkItem<Void>>();
+		this.pendingSendsWaitingForCredit = new ConcurrentLinkedDeque<String>();
 		new AtomicLong(0);
 		this.linkCredit = new AtomicInteger(0);
 		 
@@ -125,9 +124,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				@Override
 				public void run()
 				{
-					if (MessageSender.this.pendingSendWaiters != null)
+					if (MessageSender.this.pendingSendsData != null)
 					{
-						Iterator<Entry<String, ReplayableWorkItem<Void>>> pendingDeliveries = MessageSender.this.pendingSendWaiters.entrySet().iterator();
+						Iterator<Entry<String, ReplayableWorkItem<Void>>> pendingDeliveries = MessageSender.this.pendingSendsData.entrySet().iterator();
 						while(pendingDeliveries.hasNext())
 						{
 							Entry<String, ReplayableWorkItem<Void>> pendingSend = pendingDeliveries.next();
@@ -139,7 +138,9 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 							ReplayableWorkItem<Void> pendingSendWork = pendingSend.getValue();
 							if (pendingSendWork.getTimeoutTracker().remaining().compareTo(ClientConstants.TIMER_TOLERANCE) < 0)
 							{
+								pendingSendsWaitingForCredit.remove(pendingSend.getKey());
 								pendingDeliveries.remove();
+								
 								if (TRACE_LOGGER.isLoggable(Level.FINE))
 								{
 									TRACE_LOGGER.log(Level.FINE,
@@ -169,7 +170,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	// 1. actual send on the SenderLink should happen only in this method
 	// 2. If there is any PendingSend waiting for Service to sendCreditFLow 
 	//        - this will not Send - & only Enqueue's the message
-	//  	  - except if the send msg is same as the one waiting for Credit
+	//  	  - except if the msgToBeSent is same as the top one waiting for Credit
 	private CompletableFuture<Void> sendCore(
 			final byte[] bytes,
 			final int arrayOffset,
@@ -182,7 +183,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		{
 			if (deliveryTag != null)
 			{
-				this.pendingSendWaiters.remove(deliveryTag);
+				this.pendingSendsData.remove(deliveryTag);
 			}
 			
 			if (TRACE_LOGGER.isLoggable(Level.FINE))
@@ -192,7 +193,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 								"path[%s], linkName[%s], deliveryTag[%s] - timed out at sendCore", this.sendPath, this.sendLink.getName(), deliveryTag));
 			}
 			
-			MessageSender.this.throwSenderTimeout(onSend, null);
+			this.throwSenderTimeout(onSend, null);
 			return onSend;
 		}
 		
@@ -220,16 +221,26 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		
 		if (!messageSent)
 		{
-			this.pendingSendsWaitingForCredit.offer(tag);
+			if (!this.pendingSendsWaitingForCredit.contains(tag))
+			{
+				if (onSend != null)
+					this.pendingSendsWaitingForCredit.offerFirst(tag);
+				else
+					this.pendingSendsWaitingForCredit.offer(tag);	
+			}
 		}
-		else if (TRACE_LOGGER.isLoggable(Level.FINEST))
+		else
 		{
-			TRACE_LOGGER.log(Level.FINEST,
-					String.format(Locale.US, "path[%s], linkName[%s], deliveryTag[%s]", this.sendPath, this.sendLink.getName(), tag));
+			this.pendingSendsWaitingForCredit.remove(tag);
+			if (TRACE_LOGGER.isLoggable(Level.FINEST))
+			{
+				TRACE_LOGGER.log(Level.FINEST,
+						String.format(Locale.US, "path[%s], linkName[%s], deliveryTag[%s]", this.sendPath, this.sendLink.getName(), tag));
+			}
 		}
 		
 		CompletableFuture<Void> onSendFuture = (onSend == null) ? new CompletableFuture<Void>() : onSend; 
-        this.pendingSendWaiters.put(
+        this.pendingSendsData.put(
         		tag, 
         		tracker == null ?
         				new ReplayableWorkItem<Void>(bytes, arrayOffset, messageFormat, onSendFuture, this.operationTimeout) : 
@@ -383,22 +394,23 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				this.linkFirstOpen.complete(this);
 				Timer.schedule(this.operationTimer, this.timerTimeout, TimerType.RepeatRun);
 			}
-			else if (!this.pendingSendWaiters.isEmpty())
+			else if (!this.pendingSendsData.isEmpty())
 			{
-				ConcurrentHashMap<String, ReplayableWorkItem<Void>> unacknowledgedSends = new ConcurrentHashMap<String, ReplayableWorkItem<Void>>();
-				unacknowledgedSends.putAll(this.pendingSendWaiters);
+				LinkedList<String> unacknowledgedSends = new LinkedList<String>();
+				unacknowledgedSends.addAll(this.pendingSendsData.keySet());
 
 				if (unacknowledgedSends.size() > 0)
-					unacknowledgedSends.forEachEntry(1, new Consumer<Map.Entry<String, ReplayableWorkItem<Void>>>()
+				{
+					Iterator<String> reverseReader = unacknowledgedSends.descendingIterator();
+					while (reverseReader.hasNext())
 					{
-						@Override
-						public void accept(Entry<String, ReplayableWorkItem<Void>> sendWork)
+						String unacknowledgedSend = reverseReader.next();
+						if (!this.pendingSendsWaitingForCredit.contains(unacknowledgedSend))
 						{
-							String deliveryTag = sendWork.getKey();
-							MessageSender.this.pendingSendsWaitingForCredit.remove(deliveryTag);
-							MessageSender.this.reSend(deliveryTag, false);
+							this.pendingSendsWaitingForCredit.addFirst(unacknowledgedSend);
 						}
-					});
+					}
+				}
 				
 				unacknowledgedSends.clear();
 			}
@@ -501,7 +513,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		if (TRACE_LOGGER.isLoggable(Level.FINEST))
 			TRACE_LOGGER.log(Level.FINEST, String.format(Locale.US, "path[%s], linkName[%s], deliveryTag[%s]", MessageSender.this.sendPath, this.sendLink.getName(), deliveryTagStr));
 		
-		ReplayableWorkItem<Void> pendingSendWorkItem = this.pendingSendWaiters.get(deliveryTagStr);
+		ReplayableWorkItem<Void> pendingSendWorkItem = this.pendingSendsData.get(deliveryTagStr);
         
 		if (pendingSendWorkItem != null)
 		{
@@ -511,7 +523,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				this.lastKnownLinkError = null;
 				this.retryPolicy.resetRetryCount(this.getClientId());
 				this.timeoutErrorHandler.resetTimeoutErrorTracking();
-				this.pendingSendWaiters.remove(deliveryTagStr);
+				this.pendingSendsData.remove(deliveryTagStr);
 				pendingSend.complete(null);
 			}
 			else if (outcome instanceof Rejected)
@@ -530,7 +542,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 						this.getClientId(), exception, pendingSendWorkItem.getTimeoutTracker().remaining());
 				if (retryInterval == null)
 				{
-					this.pendingSendWaiters.remove(deliveryTagStr);
+					this.pendingSendsData.remove(deliveryTagStr);
 					ExceptionUtil.completeExceptionally(pendingSend, exception, this);
 				}
 				else
@@ -548,7 +560,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			}
 			else 
 			{
-				this.pendingSendWaiters.remove(deliveryTagStr);
+				this.pendingSendsData.remove(deliveryTagStr);
 				ExceptionUtil.completeExceptionally(pendingSend, new ServiceBusException(false, outcome.toString()), this);
 			}
 		}
@@ -563,7 +575,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 
 	private void reSend(final String deliveryTag, boolean reuseDeliveryTag)
 	{
-		ReplayableWorkItem<Void> pendingSend = this.pendingSendWaiters.remove(deliveryTag);
+		ReplayableWorkItem<Void> pendingSend = this.pendingSendsData.remove(deliveryTag);
 
 		if (pendingSend != null)
 		{
@@ -712,8 +724,11 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			return;
 		
 		if (TRACE_LOGGER.isLoggable(Level.FINE))
+		{
+			int numberOfSendsWaitingforCredit = this.pendingSendsWaitingForCredit.size();
 			TRACE_LOGGER.log(Level.FINE, String.format(Locale.US, "path[%s], linkName[%s], remoteLinkCredit[%s], pendingSendsWaitingForCredit[%s], pendingSendsWaitingDelivery[%s]",
-					this.sendPath, this.sendLink.getName(), updatedCredit, this.pendingSendsWaitingForCredit.size(), this.pendingSendWaiters.size()));
+					this.sendPath, this.sendLink.getName(), updatedCredit, numberOfSendsWaitingforCredit, this.pendingSendsData.size() - numberOfSendsWaitingforCredit));
+		}
 		
 		this.linkCredit.addAndGet(updatedCredit);
 		
@@ -723,7 +738,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			if (deliveryTag != null)
 			{
 				this.reSend(deliveryTag, true);
-				this.pendingSendsWaitingForCredit.poll();
 			}
 		}
 	}
