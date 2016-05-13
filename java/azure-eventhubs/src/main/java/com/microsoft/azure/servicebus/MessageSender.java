@@ -140,6 +140,13 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 							if (pendingSendWork.getTimeoutTracker().remaining().compareTo(ClientConstants.TIMER_TOLERANCE) < 0)
 							{
 								pendingDeliveries.remove();
+								if (TRACE_LOGGER.isLoggable(Level.FINE))
+								{
+									TRACE_LOGGER.log(Level.FINE,
+											String.format(Locale.US, 
+													"path[%s], linkName[%s], deliveryTag[%s] - send timedout", MessageSender.this.sendPath, MessageSender.this.sendLink.getName(), pendingSend.getKey()));
+								}
+								
 								MessageSender.this.throwSenderTimeout(pendingSendWork.getWork(), pendingSendWork.getLastKnownException());
 							}
 						}
@@ -178,34 +185,36 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				this.pendingSendWaiters.remove(deliveryTag);
 			}
 			
+			if (TRACE_LOGGER.isLoggable(Level.FINE))
+			{
+				TRACE_LOGGER.log(Level.FINE,
+						String.format(Locale.US, 
+								"path[%s], linkName[%s], deliveryTag[%s] - timed out at sendCore", this.sendPath, this.sendLink.getName(), deliveryTag));
+			}
+			
 			MessageSender.this.throwSenderTimeout(onSend, null);
 			return onSend;
 		}
 		
-		final String tag = deliveryTag == null ? UUID.randomUUID().toString().replace("-", StringUtil.EMPTY) : deliveryTag;
+		final String tag = (deliveryTag == null) ? UUID.randomUUID().toString().replace("-", StringUtil.EMPTY) : deliveryTag;
 		boolean messageSent = false;
 		
-		if (this.sendLink != null 
-				&& this.sendLink.getLocalState() != EndpointState.CLOSED && this.sendLink.getRemoteState() != EndpointState.CLOSED
-				&& this.linkCredit.get() > 0
-				&& (this.pendingSendsWaitingForCredit.isEmpty() || this.pendingSendsWaitingForCredit.peek() == deliveryTag))
-        {
-			synchronized (this.sendCall)
+		synchronized (this.sendCall)
+		{
+			if (this.sendLink != null && this.sendLink.getLocalState() != EndpointState.CLOSED && this.sendLink.getRemoteState() != EndpointState.CLOSED
+					&& this.linkCredit.get() > 0 &&
+					(this.pendingSendsWaitingForCredit.isEmpty() || tag.equals(this.pendingSendsWaitingForCredit.peek())))
 			{
-				if (this.linkCredit.get() > 0 &&
-						(this.pendingSendsWaitingForCredit.isEmpty() || this.pendingSendsWaitingForCredit.peek() == deliveryTag))
-				{
-					this.linkCredit.decrementAndGet();
-					
-		        	Delivery dlv = this.sendLink.delivery(tag.getBytes());
-		        	dlv.setMessageFormat(messageFormat);
-	
-			        int sentMsgSize = this.sendLink.send(bytes, 0, arrayOffset);
-			        assert sentMsgSize == arrayOffset : "Contract of the ProtonJ library for Sender.Send API changed";
-			        
-			        this.sendLink.advance();
-			        messageSent = true;
-				}
+				this.linkCredit.decrementAndGet();
+				
+	        	Delivery dlv = this.sendLink.delivery(tag.getBytes());
+	        	dlv.setMessageFormat(messageFormat);
+
+		        int sentMsgSize = this.sendLink.send(bytes, 0, arrayOffset);
+		        assert sentMsgSize == arrayOffset : "Contract of the ProtonJ library for Sender.Send API changed";
+		        
+		        this.sendLink.advance();
+		        messageSent = true;
 			}
 		}
 		
@@ -216,7 +225,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		else if (TRACE_LOGGER.isLoggable(Level.FINEST))
 		{
 			TRACE_LOGGER.log(Level.FINEST,
-					String.format(Locale.US, "path[%s], linkName[%s], deliveryTag[%s]", MessageSender.this.sendPath, this.sendLink.getName(), tag));
+					String.format(Locale.US, "path[%s], linkName[%s], deliveryTag[%s]", this.sendPath, this.sendLink.getName(), tag));
 		}
 		
 		CompletableFuture<Void> onSendFuture = (onSend == null) ? new CompletableFuture<Void>() : onSend; 
@@ -376,7 +385,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			}
 			else if (!this.pendingSendWaiters.isEmpty())
 			{
-				ConcurrentHashMap<String, ReplayableWorkItem<Void>> unacknowledgedSends = new ConcurrentHashMap<>();
+				ConcurrentHashMap<String, ReplayableWorkItem<Void>> unacknowledgedSends = new ConcurrentHashMap<String, ReplayableWorkItem<Void>>();
 				unacknowledgedSends.putAll(this.pendingSendWaiters);
 
 				if (unacknowledgedSends.size() > 0)
@@ -547,7 +556,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		{
 			if (TRACE_LOGGER.isLoggable(Level.WARNING))
 				TRACE_LOGGER.log(Level.WARNING, String.format(Locale.US, "path[%s], linkName[%s], delivery[%s] - mismatch",
-						MessageSender.this.sendPath, MessageSender.this.getClientId(), deliveryTagStr));
+						this.sendPath, this.sendLink.getName(), deliveryTagStr));
 			
 		}
 	}
@@ -648,7 +657,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 							if (TRACE_LOGGER.isLoggable(Level.WARNING))
 							{
 								TRACE_LOGGER.log(Level.WARNING, 
-										String.format(Locale.US, "path[%s], linkName[%s], open call timedout", MessageSender.this.sendPath, MessageSender.this.getClientId()), 
+										String.format(Locale.US, "path[%s], linkName[%s], open call timedout", MessageSender.this.sendPath, MessageSender.this.sendLink.getName()), 
 										operationTimedout);
 							}
 							
@@ -704,7 +713,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		
 		if (TRACE_LOGGER.isLoggable(Level.FINE))
 			TRACE_LOGGER.log(Level.FINE, String.format(Locale.US, "path[%s], linkName[%s], remoteLinkCredit[%s], pendingSendsWaitingForCredit[%s], pendingSendsWaitingDelivery[%s]",
-					MessageSender.this.sendPath, MessageSender.this.getClientId(), updatedCredit, this.pendingSendsWaitingForCredit.size(), this.pendingSendWaiters.size()));
+					this.sendPath, this.sendLink.getName(), updatedCredit, this.pendingSendsWaitingForCredit.size(), this.pendingSendWaiters.size()));
 		
 		this.linkCredit.addAndGet(updatedCredit);
 		
