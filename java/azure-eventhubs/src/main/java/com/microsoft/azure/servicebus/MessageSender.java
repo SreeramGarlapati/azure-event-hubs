@@ -29,6 +29,7 @@ import org.apache.qpid.proton.amqp.messaging.Accepted;
 import org.apache.qpid.proton.amqp.messaging.Data;
 import org.apache.qpid.proton.amqp.messaging.MessageAnnotations;
 import org.apache.qpid.proton.amqp.messaging.Rejected;
+import org.apache.qpid.proton.amqp.messaging.Released;
 import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.messaging.Target;
 import org.apache.qpid.proton.amqp.transport.DeliveryState;
@@ -105,7 +106,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		this.underlyingFactory = factory;
 		this.timeoutErrorHandler = timeoutErrorHandler;
 		this.operationTimeout = factory.getOperationTimeout();
-		this.timerTimeout = this.operationTimeout.getSeconds() > 9 ? this.operationTimeout.dividedBy(3) : Duration.ofSeconds(5);
+		this.timerTimeout = this.operationTimeout.getSeconds() > 1 ? this.operationTimeout.dividedBy(3) : this.operationTimeout;
 		this.lastKnownLinkError = null;
 		this.lastKnownErrorReportedAt = Instant.EPOCH;
 		
@@ -170,14 +171,15 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	// 1. actual send on the SenderLink should happen only in this method
 	// 2. If there is any PendingSend waiting for Service to sendCreditFLow 
 	//        - this will not Send - & only Enqueue's the message
-	//  	  - except if the msgToBeSent is same as the top one waiting for Credit
+	//  	  - except if the msgToBeSent is the PendingSend waiting for Credit
 	private CompletableFuture<Void> sendCore(
 			final byte[] bytes,
 			final int arrayOffset,
 			final int messageFormat,
 			final CompletableFuture<Void> onSend,
 			final TimeoutTracker tracker,
-			final String deliveryTag)
+			final String deliveryTag,
+			final Exception lastKnownError)
 	{
 		if (tracker != null && onSend != null && (tracker.remaining().isNegative() || tracker.remaining().isZero()))
 		{
@@ -198,13 +200,15 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		}
 		
 		final String tag = (deliveryTag == null) ? UUID.randomUUID().toString().replace("-", StringUtil.EMPTY) : deliveryTag;
+		final boolean isServerBusy = this.retryPolicy.isServerBusy();
 		boolean messageSent = false;
 		
 		synchronized (this.sendCall)
 		{
 			if (this.sendLink != null && this.sendLink.getLocalState() != EndpointState.CLOSED && this.sendLink.getRemoteState() != EndpointState.CLOSED
-					&& this.linkCredit.get() > 0 &&
-					(this.pendingSendsWaitingForCredit.isEmpty() || tag.equals(this.pendingSendsWaitingForCredit.peek())))
+					&& this.linkCredit.get() > 0
+					&& (this.pendingSendsWaitingForCredit.isEmpty() || this.pendingSendsWaitingForCredit.contains(tag))
+					&& !isServerBusy)
 			{
 				this.linkCredit.decrementAndGet();
 				
@@ -239,13 +243,30 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			}
 		}
 		
-		CompletableFuture<Void> onSendFuture = (onSend == null) ? new CompletableFuture<Void>() : onSend; 
-        this.pendingSendsData.put(
-        		tag, 
-        		tracker == null ?
-        				new ReplayableWorkItem<Void>(bytes, arrayOffset, messageFormat, onSendFuture, this.operationTimeout) : 
-        				new ReplayableWorkItem<Void>(bytes, arrayOffset, messageFormat, onSendFuture, tracker));
+		CompletableFuture<Void> onSendFuture = (onSend == null) ? new CompletableFuture<Void>() : onSend;
+		ReplayableWorkItem<Void> sendWaiterData = (tracker == null) ?
+				new ReplayableWorkItem<Void>(bytes, arrayOffset, messageFormat, onSendFuture, this.operationTimeout) : 
+				new ReplayableWorkItem<Void>(bytes, arrayOffset, messageFormat, onSendFuture, tracker);
 		
+		if (lastKnownError != null)
+		{
+			sendWaiterData.setLastKnownException(lastKnownError);
+		}
+		else
+		{
+			if (isServerBusy)
+			{
+				Exception serverBusy = this.lastKnownLinkError;
+				sendWaiterData.setLastKnownException(
+							serverBusy instanceof ServerBusyException
+							? (ServerBusyException) serverBusy
+							: new ServerBusyException(
+									String.format(Locale.US, "Send operation failed with ServerBusy error, sendLink[%s], senderPath[%s]",
+											this.sendLink.getName(), this.sendPath)));
+			}
+		}
+		
+        this.pendingSendsData.put(tag, sendWaiterData);
         return onSendFuture;
 	}
 	
@@ -256,7 +277,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			final CompletableFuture<Void> onSend,
 			final TimeoutTracker tracker)
 	{
-		return this.sendCore(bytes, arrayOffset, messageFormat, onSend, tracker, null);
+		return this.sendCore(bytes, arrayOffset, messageFormat, onSend, tracker, null, null);
 	}
 	
 	private int getPayloadSize(Message msg)
@@ -558,6 +579,10 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 					}, retryInterval, TimerType.OneTimeRun);
 				}
 			}
+			else if (outcome instanceof Released)
+			{
+				ExceptionUtil.completeExceptionally(pendingSend, new OperationCancelledException(outcome.toString()), this);
+			}
 			else 
 			{
 				this.pendingSendsData.remove(deliveryTagStr);
@@ -567,9 +592,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		else
 		{
 			if (TRACE_LOGGER.isLoggable(Level.WARNING))
-				TRACE_LOGGER.log(Level.WARNING, String.format(Locale.US, "path[%s], linkName[%s], delivery[%s] - mismatch",
-						this.sendPath, this.sendLink.getName(), deliveryTagStr));
-			
+				TRACE_LOGGER.log(Level.WARNING, 
+					String.format(Locale.US, "path[%s], linkName[%s], delivery[%s] - mismatch", this.sendPath, this.sendLink.getName(), deliveryTagStr));
 		}
 	}
 
@@ -584,7 +608,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 					pendingSend.getMessageFormat(),
 					pendingSend.getWork(),
 					pendingSend.getTimeoutTracker(),
-					reuseDeliveryTag ? deliveryTag : null);
+					reuseDeliveryTag ? deliveryTag : null,
+					pendingSend.getLastKnownException());
 		}
 	}
 	
