@@ -11,6 +11,7 @@ import java.time.ZonedDateTime;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import java.util.Map.Entry;
 import java.util.concurrent.CompletableFuture;
@@ -411,6 +412,11 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	@Override
 	public void onOpenComplete(Exception completionException)
 	{
+		synchronized(this.linkCreateLock)
+		{
+			this.linkCreateScheduled = false;
+		}
+		
 		if (completionException == null)
 		{
 			this.openLinkTracker = null;
@@ -448,13 +454,12 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			}
 		}
 		else
-		{		
-			ExceptionUtil.completeExceptionally(this.linkFirstOpen, completionException, this);
-		}
-		
-		synchronized(this.linkCreateLock)
-		{
-			this.linkCreateScheduled = false;
+		{	
+			if (!this.linkFirstOpen.isDone())
+			{
+				this.setClosed();
+				ExceptionUtil.completeExceptionally(this.linkFirstOpen, completionException, this);
+			}
 		}
 	}
 	
@@ -472,34 +477,35 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	{
 		if (this.getIsClosingOrClosed())
 		{
+			for (Map.Entry<String, ReplayableWorkItem<Void>> pendingSend: this.pendingSendsData.entrySet())
+			{
+				ExceptionUtil.completeExceptionally(pendingSend.getValue().getWork(),
+						completionException == null
+								? new OperationCancelledException("Send cancelled as the Sender instance is Closed before the sendOperation completed.")
+								: completionException,
+						this);					
+			}
+			
+			this.pendingSendsData.clear();
+			this.pendingSendsWaitingForCredit.clear();
 			this.linkClose.complete(null);
-			return;
-		}
-		
-		Duration remainingTime = this.openLinkTracker == null 
-						? this.operationTimeout
-						: (this.openLinkTracker.elapsed().compareTo(this.operationTimeout) > 0) 
-								? Duration.ofSeconds(0) 
-								: this.operationTimeout.minus(this.openLinkTracker.elapsed());
-		Duration retryInterval = this.retryPolicy.getNextRetryInterval(this.getClientId(), completionException, remainingTime);
-		
-		if (completionException != null)
-		{
-			this.lastKnownLinkError = completionException;
-			this.lastKnownErrorReportedAt = Instant.now();
-		}
-		
-		if (retryInterval != null)
-		{
-			this.scheduleRecreate(retryInterval);			
 			return;
 		}
 		else
 		{
-			this.setClosed();
+			this.lastKnownLinkError = completionException;
+			this.lastKnownErrorReportedAt = Instant.now();
+			
+			if (this.sendLink.getLocalState() != EndpointState.CLOSED)
+			{
+				this.sendLink.close();
+			}
+			
+			this.onOpenComplete(completionException);
+			
+			if (!this.getIsClosingOrClosed())
+				this.scheduleRecreate(Duration.ofSeconds(0));
 		}
-		
-		this.onOpenComplete(completionException);
 	}
 	
 	private void scheduleRecreate(Duration runAfter)
@@ -661,11 +667,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		catch (java.util.concurrent.TimeoutException exception)
         {
         	this.onError(new TimeoutException("Connection creation timed out.", exception));
-        	return null;
-        }
-		
-		if (connection == null || connection.getLocalState() == EndpointState.CLOSED)
-        {
         	return null;
         }
 		
