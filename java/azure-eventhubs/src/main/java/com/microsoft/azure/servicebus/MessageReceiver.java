@@ -29,6 +29,7 @@ import org.apache.qpid.proton.amqp.transport.ReceiverSettleMode;
 import org.apache.qpid.proton.amqp.transport.SenderSettleMode;
 import org.apache.qpid.proton.engine.BaseHandler;
 import org.apache.qpid.proton.engine.Connection;
+import org.apache.qpid.proton.engine.Delivery;
 import org.apache.qpid.proton.engine.EndpointState;
 import org.apache.qpid.proton.engine.Receiver;
 import org.apache.qpid.proton.engine.Session;
@@ -47,7 +48,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
 	private static final int MIN_TIMEOUT_DURATION_MILLIS = 20;
-	
+
 	private final ConcurrentLinkedQueue<ReceiveWorkItem> pendingReceives;
 	private final MessagingFactory underlyingFactory;
 	private final ITimeoutErrorHandler stuckTransportHandler;
@@ -58,9 +59,9 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private final Object prefetchCountSync;
 	private final Object flowSync;
 	private final Object linkCreateLock;
-	
+
 	private int prefetchCount;
-	
+
 	private ConcurrentLinkedQueue<Message> prefetchedMessages;
 	private Receiver receiveLink;
 	private WorkItem<MessageReceiver> linkOpen;
@@ -77,7 +78,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	private Exception lastKnownLinkError;
 
 	private int nextCreditToFlow;
-	
+
 	private MessageReceiver(final MessagingFactory factory,
 			final ITimeoutErrorHandler stuckTransportHandler,
 			final String name, 
@@ -147,8 +148,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 
 				if (workItemTimedout)
 				{
-					// workaround to push the sendflow-performative to reactor
-					MessageReceiver.this.receiveLink.flow(0);
+					synchronized (MessageReceiver.this.flowSync)
+					{
+						// workaround to push the sendflow-performative to reactor
+						// this sets the receiveLink endpoint to modified state
+						// (and increment the unsentCredits in proton by 0)
+						MessageReceiver.this.receiveLink.flow(0);
+					}
 
 					// we have a known issue with proton libraries where transport layer is stuck while Sending Flow
 					// to workaround this - we built a mechanism to reset the transport whenever we encounter this
@@ -327,8 +333,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	}
 
 	@Override
-	public void onReceiveComplete(Message message)
+	public void onReceiveComplete(Message message, Delivery delivery)
 	{
+		synchronized (this.flowSync)
+		{
+			delivery.settle();
+		}
+
 		this.prefetchedMessages.add(message);
 
 		this.underlyingFactory.getRetryPolicy().resetRetryCount(this.getClientId());

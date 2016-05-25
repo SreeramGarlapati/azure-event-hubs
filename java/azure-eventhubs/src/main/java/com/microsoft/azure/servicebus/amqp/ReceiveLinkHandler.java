@@ -128,14 +128,12 @@ public final class ReceiveLinkHandler extends BaseLinkHandler
 			int msgSize = delivery.pending() + ClientConstants.MAX_FRAME_SIZE_BYTES;
 			byte[] buffer = new byte[msgSize];
 			int read = receiveLink.recv(buffer, 0, msgSize);
-
-			delivery.settle();
-
+			
 			if (read != -1)
 			{
 				Message msg = Proton.message();
 				msg.decode(buffer, 0, read);
-				this.amqpReceiver.onReceiveComplete(msg);
+				this.amqpReceiver.onReceiveComplete(msg, delivery);
 			}
 		}
 
