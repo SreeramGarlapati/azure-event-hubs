@@ -314,8 +314,13 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 
 			if (this.receiveLink.getCredit() == 0)
 			{
-				int pendingPrefetch = this.prefetchCount - this.prefetchedMessages.size();
-				this.sendFlow(pendingPrefetch);
+				synchronized (this.flowSync)
+				{
+					this.prefetchedMessages.clear();
+					this.nextCreditToFlow = 0;
+				}
+				
+				this.sendFlow(this.prefetchCount);
 			}
 		}
 		else
