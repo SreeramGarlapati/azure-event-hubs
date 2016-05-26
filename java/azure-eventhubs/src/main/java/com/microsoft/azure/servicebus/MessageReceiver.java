@@ -20,6 +20,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import org.apache.qpid.proton.Proton;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.UnknownDescribedType;
 import org.apache.qpid.proton.amqp.messaging.Source;
@@ -343,10 +344,19 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	}
 
 	@Override
-	public void onReceiveComplete(Message message, Delivery delivery)
+	public void onReceiveComplete(Delivery delivery)
 	{
+		Message message = null;
 		synchronized (this.flowSync)
 		{
+			int msgSize = delivery.pending();
+			byte[] buffer = new byte[msgSize];
+			
+			int read = receiveLink.recv(buffer, 0, msgSize);
+			
+			Message msg = Proton.message();
+			msg.decode(buffer, 0, read);
+			
 			delivery.settle();
 		}
 

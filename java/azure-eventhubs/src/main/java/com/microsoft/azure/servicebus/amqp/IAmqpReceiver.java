@@ -9,5 +9,5 @@ import org.apache.qpid.proton.message.Message;
 
 public interface IAmqpReceiver extends IAmqpLink
 {
-	void onReceiveComplete(Message message, Delivery delivery);
+	void onReceiveComplete(Delivery delivery);
 }
