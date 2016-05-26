@@ -247,8 +247,11 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		{
 			if (this.prefetchCount < value)
 			{
-				final int deltaPrefetch = this.prefetchCount - value;
-				this.sendFlow(deltaPrefetch);
+				int deltaPrefetch = this.prefetchCount - value;
+				synchronized (this.flowSync)
+				{
+					this.sendFlow(deltaPrefetch);
+				}
 			}
 
 			this.prefetchCount = value;
@@ -312,15 +315,17 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			this.offsetInclusive = false;
 			this.underlyingFactory.getRetryPolicy().resetRetryCount(this.underlyingFactory.getClientId());
 
-			if (this.receiveLink.getCredit() == 0)
+			synchronized (this.flowSync)
 			{
-				synchronized (this.flowSync)
+				this.prefetchedMessages.clear();
+				this.nextCreditToFlow = 0;
+				this.receiveLink.flow(this.prefetchCount);
+
+				if(TRACE_LOGGER.isLoggable(Level.FINE))
 				{
-					this.prefetchedMessages.clear();
-					this.nextCreditToFlow = 0;
+					TRACE_LOGGER.log(Level.FINE, String.format("receiverPath[%s], linkname[%s], updated-link-credit[%s], sentCredits[%s]",
+							this.receivePath, this.receiveLink.getName(), this.receiveLink.getCredit(), this.prefetchCount));
 				}
-				
-				this.sendFlow(this.prefetchCount);
 			}
 		}
 		else
@@ -368,6 +373,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	@Override
 	public void onError(Exception exception)
 	{
+		this.prefetchedMessages.clear();
+
 		if (this.getIsClosingOrClosed())
 		{
 			this.linkClose.complete(null);
@@ -466,7 +473,6 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 		}
 		else 
 		{
-			this.prefetchedMessages.clear();
 			if(TRACE_LOGGER.isLoggable(Level.FINE))
 			{
 				TRACE_LOGGER.log(Level.FINE, String.format("receiverPath[%s], action[recreateReceiveLink], offset[%s], offsetInclusive[%s]", this.receivePath, this.lastReceivedOffset, this.offsetInclusive));
@@ -511,33 +517,33 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 	// CONTRACT: message should be delivered to the caller of MessageReceiver.receive() only via Poll on prefetchqueue
 	private Message pollPrefetchQueue()
 	{
-		Message message = this.prefetchedMessages.poll();
-		if (message != null)
+		synchronized (this.flowSync)
 		{
-			// message lastReceivedOffset should be up-to-date upon each poll - as recreateLink will depend on this 
-			this.lastReceivedOffset = message.getMessageAnnotations().getValue().get(AmqpConstants.OFFSET).toString();
-			this.sendFlow(1);
-		}
+			final Message message = this.prefetchedMessages.poll();
+			if (message != null)
+			{
+				// message lastReceivedOffset should be up-to-date upon each poll - as recreateLink will depend on this 
+				this.lastReceivedOffset = message.getMessageAnnotations().getValue().get(AmqpConstants.OFFSET).toString();
+				this.sendFlow(1);
+			}
 
-		return message;
+			return message;
+		}
 	}
 
 
-	// set the link credit; thread-safe
+	// set the link credit; not-thread-safe
 	private void sendFlow(final int credits)
 	{
 		int tempFlow = 0;
 
 		// slow down sending the flow - to make the protocol less-chat'y
-		synchronized (this.flowSync)
+		this.nextCreditToFlow += credits;
+		if (this.nextCreditToFlow >= this.prefetchCount)
 		{
-			this.nextCreditToFlow += credits;
-			if (this.nextCreditToFlow >= this.prefetchCount)
-			{
-				tempFlow = this.nextCreditToFlow;
-				this.receiveLink.flow(tempFlow);
-				this.nextCreditToFlow = 0;
-			}
+			tempFlow = this.nextCreditToFlow;
+			this.receiveLink.flow(tempFlow);
+			this.nextCreditToFlow = 0;
 		}
 
 		if (tempFlow != 0)
