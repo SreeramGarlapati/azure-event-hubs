@@ -354,8 +354,8 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 			
 			int read = receiveLink.recv(buffer, 0, msgSize);
 			
-			Message msg = Proton.message();
-			msg.decode(buffer, 0, read);
+			message = Proton.message();
+			message.decode(buffer, 0, read);
 			
 			delivery.settle();
 		}
@@ -474,7 +474,7 @@ public class MessageReceiver extends ClientEntity implements IAmqpReceiver, IErr
 				if(TRACE_LOGGER.isLoggable(Level.WARNING))
 				{
 					TRACE_LOGGER.log(Level.WARNING,
-							String.format("receiverPath[%s], linkname[%s], warning[starting receiver from epoch+Long.Max]", this.receivePath, this.receiveLink.getName(), this.receiveLink.getCredit()));
+							String.format("receiverPath[%s], linkname[%s], warning[starting receiver from epoch+Long.Max]", this.receivePath, this.receiveLink.getName()));
 				}
 			}
 
