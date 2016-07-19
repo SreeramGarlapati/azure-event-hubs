@@ -132,11 +132,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			public void onTimerTask(Event e) 
 			{
 				MessageSender.this.processSendWork();
-
-				if (MessageSender.this.linkCredit.get() > 0 && !MessageSender.this.getIsClosingOrClosed())
-				{
-					MessageSender.this.underlyingFactory.scheduleOnReactorThread(SEND_WORK_POLL_INTERVAL, this);
-				}
 			}
 		};
 	}
@@ -200,6 +195,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			this.pendingSendsData.put(tag, sendWaiterData);
 			this.pendingSends.offer(new WeightedDeliveryTag(tag, isRetrySend ? 1 : 0));
 		}
+		
+		// this.underlyingFactory.notifyReactor();
 		
 		return onSendFuture;
 	}
@@ -367,6 +364,15 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			this.lastKnownLinkError = null;
 			this.retryPolicy.resetRetryCount(this.getClientId());
 
+			this.underlyingFactory.registerSendWorker(new Runnable()
+			{
+				@Override
+				public void run()
+				{
+					MessageSender.this.processSendWork();
+				}
+			});
+			
 			if (!this.linkFirstOpen.isDone())
 			{
 				this.linkFirstOpen.complete(this);
@@ -724,7 +730,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	private void processSendWork()
 	{
 		final Sender sendLinkCurrent = this.sendLink;
-		
+
 		while (sendLinkCurrent != null
 				&& sendLinkCurrent.getLocalState() == EndpointState.ACTIVE && sendLinkCurrent.getRemoteState() == EndpointState.ACTIVE
 				&& this.linkCredit.get() > 0)

@@ -432,5 +432,15 @@ public class MessagingFactory extends ClientEntity implements IAmqpConnection, I
 	public Task scheduleOnReactorThread(final int delay, final Handler handler)
 	{
 		return this.getReactor().schedule(delay, handler);
-	}	
+	}
+	
+	void notifyReactor()
+	{
+		this.getReactor().wakeup();
+	}
+	
+	void registerSendWorker(final Runnable sendWorker)
+	{
+		this.reactorHandler.registerSendWorker(sendWorker);
+	}
 }

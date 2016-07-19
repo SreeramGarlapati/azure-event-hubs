@@ -4,6 +4,7 @@
  */
 package com.microsoft.azure.servicebus.amqp;
 
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -17,6 +18,8 @@ public class ReactorHandler extends BaseHandler
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
 
+	private final ConcurrentSkipListSet<Runnable> sendWorkers = new ConcurrentSkipListSet<Runnable>();
+	
 	@Override
 	public void onReactorInit(Event e)
 	{ 
@@ -29,11 +32,33 @@ public class ReactorHandler extends BaseHandler
 		reactor.setTimeout(ClientConstants.REACTOR_IO_POLL_TIMEOUT);
 	}
 
-	@Override public void onReactorFinal(Event e)
+	@Override
+	public void onReactorFinal(Event e)
 	{
 		if(TRACE_LOGGER.isLoggable(Level.FINE))
 		{
 			TRACE_LOGGER.log(Level.FINE, "reactor.onReactorFinal");
 		}
+	}
+	
+	@Override
+	public void onReactorQuiesced(Event e)
+	{
+		// System.out.println(this.sendWorkers.size());
+		
+		for(Runnable sendWorker : sendWorkers)
+		{
+			sendWorker.run();
+		}
+	}
+	
+	public void registerSendWorker(final Runnable sendWorker)
+	{
+		this.sendWorkers.add(sendWorker);
+	}
+	
+	public void unregisterSendWorker(final Runnable sendWorker)
+	{
+		this.sendWorkers.remove(sendWorker);
 	}
 }
