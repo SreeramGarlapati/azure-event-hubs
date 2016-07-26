@@ -77,7 +77,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 
 	private Sender sendLink;
 	private CompletableFuture<MessageSender> linkFirstOpen; 
-	private AtomicInteger linkCredit;
+	private int linkCredit;
 	private TimeoutTracker openLinkTracker;
 	private boolean linkCreateScheduled;
 	private Object linkCreateLock;
@@ -122,7 +122,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		this.pendingSendLock = new Object();
 		this.pendingSendsData = new ConcurrentHashMap<String, ReplayableWorkItem<Void>>();
 		this.pendingSends = new PriorityQueue<WeightedDeliveryTag>(1000, new DeliveryTagComparator());
-		this.linkCredit = new AtomicInteger(0);
+		this.linkCredit = 0;
 
 		this.linkCreateLock = new Object();
 		this.linkClose = new CompletableFuture<Void>();
@@ -718,12 +718,8 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 					this.sendPath, this.sendLink.getName(), updatedCredit, numberOfSendsWaitingforCredit, this.pendingSendsData.size() - numberOfSendsWaitingforCredit));
 		}
 
-		this.linkCredit.addAndGet(updatedCredit);
-		
-		if (this.linkCredit.get() > 0)
-		{
-			this.sendWork.onTimerTask(null);
-		}
+		this.linkCredit = this.linkCredit + updatedCredit;
+		this.sendWork.onTimerTask(null);
 	}
 	
 	// actual send on the SenderLink should happen only in this method
@@ -733,7 +729,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		
 		while (sendLinkCurrent != null
 				&& sendLinkCurrent.getLocalState() == EndpointState.ACTIVE && sendLinkCurrent.getRemoteState() == EndpointState.ACTIVE
-				&& this.linkCredit.get() > 0)
+				&& this.linkCredit > 0)
 		{
 			final WeightedDeliveryTag deliveryTag;
 			final ReplayableWorkItem<Void> sendData;
@@ -769,7 +765,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				
 				if (linkAdvance)
 				{
-					this.linkCredit.decrementAndGet();
+					this.linkCredit--;
 					
 					ScheduledFuture<?> timeoutTask = Timer.schedule(new Runnable()
 					{
