@@ -203,7 +203,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		}
 		catch(IOException ioException)
 		{
-			// TODO: Test EXACT BEHV
 			onSendFuture.completeExceptionally(new ServiceBusException(false, ioException));
 		}
 
@@ -743,6 +742,14 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			
 			if (sendData != null)
 			{
+				if (sendData.getWork() != null && sendData.getWork().isDone())
+				{
+					// CoreSend could enque Sends into PendingSends Queue and can fail the SendCompletableFuture
+					// (when It fails to schedule the ProcessSendWork on reactor Thread)
+					this.pendingSendsData.remove(sendData);
+					continue;
+				}
+				
 				Delivery delivery = null;
 				boolean linkAdvance = false;
 				int sentMsgSize = 0;
@@ -750,13 +757,13 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				
 				try
 				{
-					delivery = this.sendLink.delivery(deliveryTag.getDeliveryTag().getBytes());
+					delivery = sendLinkCurrent.delivery(deliveryTag.getDeliveryTag().getBytes());
 					delivery.setMessageFormat(sendData.getMessageFormat());
 					
-					sentMsgSize = this.sendLink.send(sendData.getMessage(), 0, sendData.getEncodedMessageSize());
+					sentMsgSize = sendLinkCurrent.send(sendData.getMessage(), 0, sendData.getEncodedMessageSize());
 					assert sentMsgSize == sendData.getEncodedMessageSize() : "Contract of the ProtonJ library for Sender.Send API changed";
 	
-					linkAdvance = this.sendLink.advance();
+					linkAdvance = sendLinkCurrent.advance();
 				}
 				catch(Exception exception)
 				{

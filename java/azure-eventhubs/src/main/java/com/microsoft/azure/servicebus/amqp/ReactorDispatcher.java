@@ -6,27 +6,40 @@ package com.microsoft.azure.servicebus.amqp;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedSelectorException;
 import java.nio.channels.Pipe;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.HashSet;
 
 import org.apache.qpid.proton.engine.BaseHandler;
 import org.apache.qpid.proton.engine.Event;
+import org.apache.qpid.proton.Proton;
 import org.apache.qpid.proton.reactor.Reactor;
 import org.apache.qpid.proton.reactor.Selectable;
 import org.apache.qpid.proton.reactor.Selectable.Callback;
 
-public final class ReactorScheduler
+/**
+ * {@link Reactor} is not thread-safe - all calls to {@link Proton} API's should be - on the Reactor Thread.
+ * {@link Reactor} works out-of-box for all event driven API - ex: onReceive - which could raise upon onSocketRead.
+ * {@link Reactor} didn't support API's like Send() out-of-box - which could potentially run on different thread to that of Reactor.
+ * So, the following utility class is used to generate an Event to hook into {@link Reactor}'s event delegation pattern.
+ * It uses a {@link Pipe} as the IO on which Reactor Listens to.
+ * Cardinality: multiple {@link ReactorDispatcher}'s could be attached to 1 {@link Reactor}.
+ * Each {@link ReactorDispatcher} should be initialized Synchronously - as it calls API in {@link Reactor} which is not thread-safe. 
+ */
+public final class ReactorDispatcher
 {
 	private final Reactor reactor;
 	private final Pipe ioSignal;
 	private final ConcurrentLinkedQueue<BaseHandler> workQueue;
+	private final ScheduleHandler workScheduler;
 
-	public ReactorScheduler(final Reactor reactor) throws IOException
+	public ReactorDispatcher(final Reactor reactor) throws IOException
 	{
 		this.reactor = reactor;
-		this.ioSignal = Pipe.open(); // TODO: we need a hook for Reactor.IO.pipe()
+		this.ioSignal = Pipe.open();
 		this.workQueue = new ConcurrentLinkedQueue<BaseHandler>();
+		this.workScheduler = new ScheduleHandler();
 		
 		initializeSelectable();
 	}
@@ -36,33 +49,20 @@ public final class ReactorScheduler
 		Selectable schedulerSelectable = this.reactor.selectable();
 		
 		schedulerSelectable.setChannel(this.ioSignal.source());
-		schedulerSelectable.onReadable(new ScheduleHandler(this.ioSignal, this.workQueue));
-		
-		schedulerSelectable.onFree(new Callback()
-		{
-			@Override public void run(Selectable selectable)
-			{
-				try
-				{
-					selectable.getChannel().close();
-				}
-				catch (IOException ignore)
-				{
-				}
-			} 
-		});
+		schedulerSelectable.onReadable(this.workScheduler);
+		schedulerSelectable.onFree(new CloseHandler());
 		
 		schedulerSelectable.setReading(true);
 		this.reactor.update(schedulerSelectable);
 	}
 
-	public void schedule(final BaseHandler timerCallback) throws IOException
+	public void invoke(final BaseHandler timerCallback) throws IOException
 	{
 		this.workQueue.offer(timerCallback);
 		this.signalWorkQueue();
 	}
 	
-	public void schedule(final int delay, final BaseHandler timerCallback) throws IOException
+	public void invoke(final int delay, final BaseHandler timerCallback) throws IOException
 	{
 		this.workQueue.offer(new DelayHandler(this.reactor, delay, timerCallback));
 		this.signalWorkQueue();
@@ -95,21 +95,12 @@ public final class ReactorScheduler
 	
 	private final class ScheduleHandler implements Callback
 	{
-		final ConcurrentLinkedQueue<BaseHandler> workQueue;
-		final Pipe ioSignal;
-		
-		public ScheduleHandler(final Pipe ioSignal, final ConcurrentLinkedQueue<BaseHandler> workQueue)
-		{
-			this.workQueue = workQueue;
-			this.ioSignal = ioSignal;
-		}
-
 		@Override
 		public void run(Selectable selectable)
 		{
 			try
 			{
-				this.ioSignal.source().read(ByteBuffer.allocate(1024));
+				ioSignal.source().read(ByteBuffer.allocate(1024));
 			}
 			catch(IOException ioException)
 			{
@@ -118,7 +109,7 @@ public final class ReactorScheduler
 			
 			final HashSet<BaseHandler> completedWork = new HashSet<BaseHandler>();
 			
-			BaseHandler topWork = this.workQueue.poll(); 
+			BaseHandler topWork = workQueue.poll(); 
 			while (topWork != null)
 			{
 				if (!completedWork.contains(topWork))
@@ -127,8 +118,42 @@ public final class ReactorScheduler
 					completedWork.add(topWork);
 				}
 				
-				topWork = this.workQueue.poll();
+				topWork = workQueue.poll();
 			}
-		}	
+		}
+	}
+	
+	private final class CloseHandler implements Callback
+	{
+		@Override public void run(Selectable selectable)
+		{
+			try
+			{
+				selectable.getChannel().close();
+			}
+			catch (IOException ignore)
+			{
+			}
+			
+			try
+			{
+				if (ioSignal.sink().isOpen())
+					ioSignal.sink().close();
+			}
+			catch (IOException ignore)
+			{
+			}
+			
+			workScheduler.run(null);
+			
+			try
+			{
+				if (ioSignal.source().isOpen())
+					ioSignal.source().close();
+			}
+			catch (IOException ignore)
+			{
+			}
+		}
 	}
 }
