@@ -6,7 +6,7 @@ package com.microsoft.azure.servicebus.amqp;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ClosedSelectorException;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.Pipe;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.HashSet;
@@ -101,6 +101,9 @@ public final class ReactorDispatcher
 			try
 			{
 				ioSignal.source().read(ByteBuffer.allocate(1024));
+			}
+			catch(ClosedChannelException ignore)
+			{
 			}
 			catch(IOException ioException)
 			{
