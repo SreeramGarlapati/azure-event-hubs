@@ -4,6 +4,7 @@
  */
 package com.microsoft.azure.servicebus;
 
+import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.time.Duration;
 import java.time.Instant;
@@ -63,7 +64,6 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 {
 	private static final Logger TRACE_LOGGER = Logger.getLogger(ClientConstants.SERVICEBUS_CLIENT_TRACE);
 	private static final String SEND_TIMED_OUT = "Send operation timed out";
-	private static final int SEND_WORK_POLL_INTERVAL = 50;
 
 	private final MessagingFactory underlyingFactory;
 	private final String sendPath;
@@ -73,7 +73,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 	private final Object pendingSendLock;
 	private final ConcurrentHashMap<String, ReplayableWorkItem<Void>> pendingSendsData;
 	private final PriorityQueue<WeightedDeliveryTag> pendingSends;
-	private final BaseHandler sendPump;
+	private final BaseHandler sendWork;
 
 	private Sender sendLink;
 	private CompletableFuture<MessageSender> linkFirstOpen; 
@@ -102,6 +102,7 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 				msgSender.sendLink = msgSender.createSendLink();
 			}
 		}, Duration.ofSeconds(0), TimerType.OneTimeRun);
+
 		return msgSender.linkFirstOpen;
 	}
 
@@ -126,17 +127,12 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 		this.linkCreateLock = new Object();
 		this.linkClose = new CompletableFuture<Void>();
 		
-		this.sendPump = new BaseHandler()
+		this.sendWork = new BaseHandler()
 		{ 
 			@Override
 			public void onTimerTask(Event e) 
 			{
 				MessageSender.this.processSendWork();
-
-				if (MessageSender.this.linkCredit.get() > 0 && !MessageSender.this.getIsClosingOrClosed())
-				{
-					MessageSender.this.underlyingFactory.scheduleOnReactorThread(SEND_WORK_POLL_INTERVAL, this);
-				}
 			}
 		};
 	}
@@ -201,6 +197,16 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			this.pendingSends.offer(new WeightedDeliveryTag(tag, isRetrySend ? 1 : 0));
 		}
 		
+		try
+		{
+			this.underlyingFactory.scheduleOnReactorThread(this.sendWork);
+		}
+		catch(IOException ioException)
+		{
+			// TODO: Test EXACT BEHV
+			onSendFuture.completeExceptionally(new ServiceBusException(false, ioException));
+		}
+
 		return onSendFuture;
 	}
 
@@ -711,13 +717,13 @@ public class MessageSender extends ClientEntity implements IAmqpSender, IErrorCo
 			TRACE_LOGGER.log(Level.FINE, String.format(Locale.US, "path[%s], linkName[%s], remoteLinkCredit[%s], pendingSendsWaitingForCredit[%s], pendingSendsWaitingDelivery[%s]",
 					this.sendPath, this.sendLink.getName(), updatedCredit, numberOfSendsWaitingforCredit, this.pendingSendsData.size() - numberOfSendsWaitingforCredit));
 		}
-		
-		if (this.linkCredit.get() <= 0)
-		{
-			this.underlyingFactory.scheduleOnReactorThread(0, this.sendPump);
-		}
 
 		this.linkCredit.addAndGet(updatedCredit);
+		
+		if (this.linkCredit.get() > 0)
+		{
+			this.sendWork.onTimerTask(null);
+		}
 	}
 	
 	// actual send on the SenderLink should happen only in this method
