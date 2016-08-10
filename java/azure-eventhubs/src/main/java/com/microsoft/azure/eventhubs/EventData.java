@@ -279,6 +279,7 @@ public class EventData implements Serializable
 		final int length = in.readInt();
 		final byte[] data = new byte[length];
 		in.read(data, 0, length);
+		this.bodyData = new Binary(data, 0, length);
 	}
 
 	public static class SystemProperties implements Serializable
