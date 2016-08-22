@@ -226,6 +226,17 @@ public class EventData implements Serializable
 	}
 	
 	/**
+	 * Set Application Properties
+	 * @param applicationProperties the Application Properties bag
+	 * @deprecated use {@link #getProperties()} and add properties to the bag.
+	 */
+	@Deprecated 
+	public void setProperties(final Map<String, String> applicationProperties)
+	{
+		this.properties = applicationProperties;
+	}
+	
+	/**
 	 * SystemProperties that are populated by EventHubService.
 	 * <p>As these are populated by Service, they are only present on a Received EventData.
 	 * <p>Usage:<p>
